@@ -2160,6 +2160,11 @@ function processDelimiters(delims, text) {
   // emphasis forms, delimiters inside its span are scoped to it, so they
   // cannot match a closer outside the span (no crossing emphasis).
   let emScopeCounter = 0;
+  // Strong spans already formed. An outer em of the SAME delimiter char
+  // does NOT form around a strong whose closing delimiter can also open
+  // (immediately followed by a word char): *a **b**c*. A different char
+  // (_large **data**not_) is unaffected.
+  const strongSpans = [];
   for (let ci = 0; ci < list.length; ci++) {
     const closer = list[ci];
     if (!closer.active || closer.len === 0 || !closer.canClose) continue;
@@ -2176,7 +2181,22 @@ function processDelimiters(delims, text) {
       }
       // match
       const use = (opener.len >= 2 && closer.len >= 2) ? 2 : 1;
+      // An em (use 1) of the same char does not form around a strong whose
+      // closing delimiter can also open and is the nearest delimiter span
+      // just before this closer: *a **b**c*. If another delimiter follows
+      // the strong (*a **b**c** d*), or the chars differ, it forms.
+      if (use === 1) {
+        let blocked = false;
+        for (const sp of strongSpans) {
+          // Block only when the strong's opener is open-only (preceded by
+          // a space, e.g. 'so **change**') — when it can also close
+          // ('first**stream**', attached to a word) the outer em forms.
+          if (sp.oi > oi && sp.ci === ci - 1 && sp.closer.canOpen && sp.closer.ch === closer.ch && !sp.opener.canClose) { blocked = true; break; }
+        }
+        if (blocked) { oi--; continue; }
+      }
       const tag = closer.ch === TILDE ? 'del' : (use === 2 ? 'strong' : 'em');
+      if (use === 2 && closer.ch !== TILDE) strongSpans.push({ oi, ci, closer, opener });
       addInsertion(opener.node, opener.offset + opener.len - use, use, tag, true);
       addInsertion(closer.node, closer.offset, use, tag, false);
       opener.len -= use;
