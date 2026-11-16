@@ -871,28 +871,32 @@ function parseBlocks(src) {
       // the indent of a top-level list item is subtracted (doc-02
       // isolated: col 6 - 2 = 4). A list item inside a blockquote does
       // not shift the tab stop.
-      let inBlockquote = false, listIndentSum = 0;
+      // Tab-expansion column: top level keeps the pre-strip column
+      // (0 -> a leading tab is preserved, doc-15). Inside a blockquote
+      // the absolute column applies, minus top-level list-item indents
+      // (doc-02 isolated: col 6 - 2 = 4). Exception: a zero-indent fence
+      // in a blockquote with NO list item counts a leading tab as 2
+      // spaces regardless of depth (doc-05 `> >`, doc-26); when a list
+      // item intervenes the absolute column applies (doc-02).
+      let inBlockquote = false, listIndentSum = 0, hasItem = false;
       {
         let anc = tip.parent;
         while (anc) {
           if (anc.t === 'blockquote') inBlockquote = true;
-          if (anc.t === 'item' && anc._contentIndent) {
-            // Subtract only a list item that is NOT itself inside a
-            // blockquote (an item inside a blockquote does not shift the
-            // tab stop, doc-02; a top-level item does, doc-02 isolated).
-            let p = anc.parent, itemInBQ = false;
-            while (p) { if (p.t === 'blockquote') { itemInBQ = true; break; } p = p.parent; }
-            if (!itemInBQ) listIndentSum += anc._contentIndent;
+          if (anc.t === 'item') {
+            hasItem = true;
+            if (anc._contentIndent) {
+              let p = anc.parent, itemInBQ = false;
+              while (p) { if (p.t === 'blockquote') { itemInBQ = true; break; } p = p.parent; }
+              if (!itemInBQ) listIndentSum += anc._contentIndent;
+            }
           }
           anc = anc.parent;
         }
       }
       let tabCol;
       if (inBlockquote) {
-        // Absolute column, minus top-level list-item indents (doc-02).
-        // (A zero-indent fence in a blockquote needs no special case:
-        // its tab is already at column 2, doc-26.)
-        tabCol = col - listIndentSum;
+        tabCol = (tip._fenceIndent === 0 && !hasItem) ? 2 : col - listIndentSum;
       } else {
         tabCol = colBeforeStrip;
       }
