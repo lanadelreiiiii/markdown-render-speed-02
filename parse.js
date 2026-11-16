@@ -1424,6 +1424,23 @@ function labelHasUnmatchedRun2(label) {
   }
   return false;
 }
+function labelHasUnmatchedRun1(label) {
+  // Count single-backtick runs; they pair in order, so an odd count leaves
+  // one unmatched (doc-22: `a ` b` has three run-1s).
+  let count1 = 0;
+  let i = 0;
+  const n = label.length;
+  while (i < n) {
+    const c = label.charCodeAt(i);
+    if (c === 92 && i + 1 < n) { i += 2; continue; }
+    if (c !== 96) { i++; continue; }
+    let run = 0;
+    while (i + run < n && label.charCodeAt(i + run) === 96) run++;
+    if (run === 1) count1++;
+    i += run;
+  }
+  return (count1 % 2) === 1;
+}
 function labelHasBadBacktick(label, isFullRef) {
   let i = 0;
   const n = label.length;
@@ -1446,9 +1463,10 @@ function labelHasBadBacktick(label, isFullRef) {
     if (found === -1) { i += run; continue; } // unmatched run: does not block
     const content = label.slice(i + run, found);
     if (content.indexOf('`') !== -1) {
-      // full reference: blocks only when text follows the code span
-      // ([a ``x`y`` b][r] no, [a ``x`y``][r] yes).
-      if (isFullRef && found + run < n) return true;
+      // blocks when text follows the code span, for inline links and
+      // full references alike ([a ``x`y`` b](u) no, [a ``x`y``](u) yes;
+      // doc-22: [public updates `` a ` b `` in uses](u) no).
+      if (found + run < n) return true;
       // inside an underscore emphasis? an unescaped '_' before the span
       // and an unescaped '_' after it.
       let hasOpen = false;
@@ -1491,6 +1509,11 @@ function labelHasBadBacktick(label, isFullRef) {
       return -1;
     }
 
+
+    // A label with an unmatched single backtick blocks the link, unless
+    // it also holds an unmatched run of 2+ backticks (doc-22: [a `x ` y` b]
+    // does not form, [a ``x` b] does).
+    if (labelHasUnmatchedRun1(labelText) && !labelHasUnmatchedRun2(labelText)) return -1;
 
     // parse what follows ']'
     let p = closePos + 1;
