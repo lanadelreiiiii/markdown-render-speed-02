@@ -1351,7 +1351,11 @@ function parseInline(text, refs) {
 
 // True if `label` contains a code span whose content includes a backtick,
 // or an unmatched backtick run. Such a label cannot form a link (doc-20).
-function labelHasBadBacktick(label) {
+// A label containing a code span whose content holds a backtick blocks the
+// link ONLY when the span sits inside an underscore emphasis (_..._) or the
+// link is a full reference [label][ref]. An unmatched backtick run, or a
+// backtick code span without _..._ in an inline link, does NOT block.
+function labelHasBadBacktick(label, isFullRef) {
   let i = 0;
   const n = label.length;
   while (i < n) {
@@ -1370,9 +1374,30 @@ function labelHasBadBacktick(label) {
         j += r2;
       } else j++;
     }
-    if (found === -1) return true; // unmatched backtick run
+    if (found === -1) { i += run; continue; } // unmatched run: does not block
     const content = label.slice(i + run, found);
-    if (content.indexOf('`') !== -1) return true; // backtick inside code span
+    if (content.indexOf('`') !== -1) {
+      // full reference: blocks only when text follows the code span
+      // ([a ``x`y`` b][r] no, [a ``x`y``][r] yes).
+      if (isFullRef && found + run < n) return true;
+      // inside an underscore emphasis? an unescaped '_' before the span
+      // and an unescaped '_' after it.
+      let hasOpen = false;
+      for (let k = i - 1; k >= 0; k--) {
+        const ch = label.charCodeAt(k);
+        if (ch === 92) { k--; continue; }
+        if (ch === 95) { hasOpen = true; break; }
+        if (ch === 91 || ch === 93) break;
+      }
+      let hasClose = false;
+      for (let k = found + run; k < n; k++) {
+        const ch = label.charCodeAt(k);
+        if (ch === 92) { k++; continue; }
+        if (ch === 95) { hasClose = true; break; }
+        if (ch === 91 || ch === 93) break;
+      }
+      if (hasOpen && hasClose) return true;
+    }
     i = found + run;
   }
   return false;
@@ -1385,6 +1410,18 @@ function labelHasBadBacktick(label) {
     // find the label text (raw, between '[' and ']')
     const labelStart = br.labelStart; // index just after '['
     const labelText = text.slice(labelStart, closePos);
+    // A code span with a backtick inside blocks the link only inside an
+    // underscore emphasis or for a full-reference link (doc-16/18/20/23).
+    const afterClose = text[closePos + 1];
+    if (labelHasBadBacktick(labelText, afterClose === '[')) {
+      // The label's underscore emphasis also does NOT form: deactivate the
+      // '_' delimiters inside the label so they stay literal.
+      for (const d of delims) {
+        if (d.ch === UNDER && d.pos >= labelStart && d.pos < closePos) { d.canOpen = false; d.canClose = false; }
+      }
+      return -1;
+    }
+
 
     // parse what follows ']'
     let p = closePos + 1;
@@ -1655,7 +1692,7 @@ function labelHasBadBacktick(label) {
       }
       addText(text.slice(i, i + run));
       const node = textBuf;
-      delims.push({ ch: c, len: run, origLen: run, canOpen, canClose, node, offset: node.s.length - run, active: true, scope: 0 });
+      delims.push({ ch: c, len: run, origLen: run, canOpen, canClose, node, offset: node.s.length - run, active: true, scope: 0, pos: i });
       i += run;
       continue;
     }
