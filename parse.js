@@ -908,7 +908,11 @@ function parseBlocks(src) {
       const ind = countIndent();
       if (ind >= 4) {
         advCols(4);
-        addLine(tip, expandTabs(restOfLine(), col));
+        // Top level: a leading tab is preserved (col 0). Inside a
+        // blockquote/list the absolute column expands it (doc-06).
+        let inCont = false;
+        { let anc = tip.parent; while (anc) { if (anc.t === 'blockquote' || anc.t === 'item') { inCont = true; break; } anc = anc.parent; } }
+        addLine(tip, expandTabs(restOfLine(), inCont ? col : 0));
         continue;
       }
       finalize(tip); tip = tip.parent;
@@ -1182,7 +1186,9 @@ function parseBlocks(src) {
       if (ind5 >= 4 && tip.t !== 'paragraph') {
         advCols(4);
         const code = addChild(tip, newNode('code_indented'));
-        addLine(code, restOfLine());
+        let inCont5 = false;
+        { let anc = tip; while (anc) { if (anc.t === 'blockquote' || anc.t === 'item') { inCont5 = true; break; } anc = anc.parent; } }
+        addLine(code, expandTabs(restOfLine(), inCont5 ? col : 0));
         tip = code;
         break;
       }
