@@ -1643,6 +1643,67 @@ function flanking(s, start, end) {
 // One C++ regex scan; used to find plain-text runs quickly.
 const RE_NEXT_SPECIAL = /[\\`&<*_!\[\]~]/g;
 
+// True if `label` holds a run of 2+ backticks with no matching run of
+// the same length later (unmatched). Runs pair in order; the closing
+// run of a matched pair is not unmatched (doc-33: `` a ` b `` has two
+// matched run-2s).
+function labelHasUnmatchedRun2(label) {
+  let i = 0;
+  const n = label.length;
+  while (i < n) {
+    const c = label.charCodeAt(i);
+    if (c === 92 && i + 1 < n) { i += 2; continue; }
+    if (c !== 96) { i++; continue; }
+    let run = 0;
+    while (i + run < n && label.charCodeAt(i + run) === 96) run++;
+    if (run >= 2) {
+      let j = i + run, found = -1;
+      while (j < n) {
+        if (label.charCodeAt(j) === 96) {
+          let r2 = 0;
+          while (j + r2 < n && label.charCodeAt(j + r2) === 96) r2++;
+          if (r2 === run) { found = j; break; }
+          j += r2;
+        } else j++;
+      }
+      if (found === -1) return true;
+      i = found + run;
+      continue;
+    }
+    i += run;
+  }
+  return false;
+}
+// True if `label` holds a single-backtick run that does NOT pair into
+// a code span (runs inside a formed code span do not count).
+function labelHasUnmatchedRun1(label) {
+  let i = 0;
+  const n = label.length;
+  while (i < n) {
+    const c = label.charCodeAt(i);
+    if (c === 92 && i + 1 < n) { i += 2; continue; }
+    if (c !== 96) { i++; continue; }
+    let run = 0;
+    while (i + run < n && label.charCodeAt(i + run) === 96) run++;
+    let j = i + run, found = -1;
+    while (j < n) {
+      if (label.charCodeAt(j) === 96) {
+        let r2 = 0;
+        while (j + r2 < n && label.charCodeAt(j + r2) === 96) r2++;
+        if (r2 === run) { found = j; break; }
+        j += r2;
+      } else j++;
+    }
+    if (found === -1) {
+      if (run === 1) return true;
+      i += run;
+      continue;
+    }
+    i = found + run;
+  }
+  return false;
+}
+
 // True if `label` contains a code span whose content includes a
 // backtick. Such a label cannot form a link: it blocks when text
 // follows the code span ([a ``x`y`` b](u) does not form, [a ``x`y``](u)
@@ -1706,6 +1767,10 @@ function parseInline(text, refs, inBracket) {
   // label ranges whose link was blocked by a bad backtick: '_' delimiters
   // inside them must stay literal (doc-16: _node ... _ does not form <em>)
   const blockedRanges = [];
+  // end position of a link whose label holds an unmatched run of 2+
+  // backticks: a later code span poisons emphasis delimiters between
+  // here and the span (doc-09/16/28/33/35)
+  let _pendingBadLink = -1;
   const n = text.length;
   let i = 0;
   let lastNode = null;
@@ -1904,51 +1969,6 @@ function parseInline(text, refs, inBracket) {
   }
   // Is there an unmatched '[' or ']' (or unclosed backtick) in the label
   // text? Used to decide whether a shortcut ref link may resolve.
-  function labelHasUnmatchedRun2(s2) {
-    // returns true when the label contains an unmatched '[' (depth>0 at end)
-    // or an unmatched ']' (a ']' with no matching '[' before it)
-    let depth = 0;
-    for (let k = 0; k < s2.length; k++) {
-      const c = s2[k];
-      if (c === '\\' && k + 1 < s2.length && isPunctAscii(s2.charCodeAt(k + 1))) { k++; continue; }
-      if (c === '[') depth++;
-      else if (c === ']') {
-        if (depth === 0) return true;
-        depth--;
-      }
-    }
-    return depth > 0;
-  }
-  function labelHasUnmatchedRun1(s2) {
-    // same as Run2 but also treats an unclosed backtick as unmatched
-    let depth = 0;
-    for (let k = 0; k < s2.length; k++) {
-      const c = s2[k];
-      if (c === '\\' && k + 1 < s2.length && isPunctAscii(s2.charCodeAt(k + 1))) { k++; continue; }
-      if (c === '`') {
-        let cnt = 0, q = k;
-        while (q < s2.length && s2[q] === '`') { cnt++; q++; }
-        let e = q, closed = false;
-        while (e < s2.length) {
-          if (s2[e] === '`') {
-            let k2 = e, cnt2 = 0;
-            while (k2 < s2.length && s2[k2] === '`') { cnt2++; k2++; }
-            if (cnt2 === cnt) { closed = true; break; }
-            e = k2; continue;
-          }
-          e++;
-        }
-        if (!closed) return true;
-        k = q - 1; continue;
-      }
-      if (c === '[') depth++;
-      else if (c === ']') {
-        if (depth === 0) return true;
-        depth--;
-      }
-    }
-    return depth > 0;
-  }
   // <...> autolink / raw HTML tag at i (text[i] === '<'). Returns node or null.
   function deautolink(i0) {
     // raw HTML tag first (a '<' followed by a letter, '/', '!', '?')
@@ -1956,10 +1976,26 @@ function parseInline(text, refs, inBracket) {
     if (tag) {
       const t = tag.text;
       const low = t.toLowerCase();
-      if (low === '</a>' || low.startsWith('</a ') || low.startsWith('</a>')) { _inLink = false; _aSelfClose = false; }
-      else if (/^<a(\s|\/?>)/.test(low)) {
-        if (low.endsWith('/>')) { _aSelfClose = true; }
-        else { _inLink = true; _aSelfClose = false; }
+      // Unclosed <a> suppresses extended autolinks for the rest of the
+      // document; inline </a> clears it. Refined (doc-06/33): an <a>
+      // with an href suppresses immediately; a bare <a> does not; a
+      // self-closing <a ... /> suppresses only when another HTML tag
+      // follows it in the same paragraph.
+      if (low === '</a>' || (low.startsWith('</a') && (low[4] === ' ' || low[4] === '\t' || low[4] === '\n' || low[4] === '>'))) {
+        _inLink = false; _aSelfClose = false;
+      } else if (low.startsWith('<a') && (low[2] === ' ' || low[2] === '\t' || low[2] === '\n' || low[2] === '>')) {
+        const hasHref = /href\s*=/.test(low);
+        const selfClose = low.endsWith('/>');
+        if (hasHref) {
+          _inLink = true;
+          _aSelfClose = false;
+        } else if (selfClose) {
+          _aSelfClose = true;
+        }
+        // a bare <a> (no href, not self-closing) does not suppress
+      } else if (_aSelfClose) {
+        _inLink = true;
+        _aSelfClose = false;
       }
       return { node: { t: 'html', text: t }, end: tag.end };
     }
@@ -2012,6 +2048,16 @@ function parseInline(text, refs, inBracket) {
     if (node.label.indexOf('`') !== -1 && labelHasBadBacktick(node.label)) {
       blockedRanges.push([open + 1, node.labelEnd]);
       return null;
+    }
+    // A label with an unmatched single-backtick run blocks the link,
+    // unless it also holds an unmatched run of 2+ backticks (doc-22).
+    if (node.label.indexOf('`') !== -1 && labelHasUnmatchedRun1(node.label) && !labelHasUnmatchedRun2(node.label)) {
+      return null;
+    }
+    // A link whose label holds an unmatched run of 2+ backticks
+    // poisons emphasis up to a later code span (doc-09/16/28/33/35).
+    if (!isImage && node.label.indexOf('`') !== -1 && labelHasUnmatchedRun2(node.label)) {
+      _pendingBadLink = res.end;
     }
     // precedence: if the label contains a nested '[' that itself forms a
     // LINK, the inner link wins and the outer '[' is literal text.
@@ -2223,12 +2269,37 @@ function parseInline(text, refs, inBracket) {
         }
         e++;
       }
-      if (found === -1) { pushText(text.slice(i, j)); i = j; continue; }
+      if (found === -1) {
+        // A backtick run that fails to form a code span after a
+        // bad-backtick link also poisons '_' and '*' emphasis before
+        // it (doc-09 `h`` case).
+        if (_pendingBadLink !== -1) {
+          for (const d of delims) {
+            if ((d.ch === 95 || d.ch === 42) && d.pos >= _pendingBadLink && d.pos < i) { d.canOpen = false; d.canClose = false; }
+          }
+        }
+        pushText(text.slice(i, j)); i = j; continue;
+      }
       let code = text.slice(j, found);
       // strip one leading/trailing space when both present and code has
       // non-space content; newlines become spaces
       if (code.indexOf('\n') !== -1) code = code.replace(/\n/g, ' ');
       if (code.length >= 2 && code[0] === ' ' && code[code.length - 1] === ' ' && code.trim() !== '') code = code.slice(1, -1);
+      if (_pendingBadLink !== -1) {
+        // A code span after a bad-backtick link poisons '_' emphasis
+        // before it always, and '*' emphasis only when the code span
+        // content holds '_' / a backtick / a trailing space (doc-09/16/
+        // 28/33/35). The flag persists to the end of the paragraph so a
+        // later code span can poison emphasis that follows an earlier
+        // clean code span.
+        const strongTrigger = code.indexOf('_') !== -1 || code.indexOf('`') !== -1 || (code.length > 0 && code[code.length - 1] === ' ');
+        for (const d of delims) {
+          if (d.pos >= _pendingBadLink && d.pos < i) {
+            if (d.ch === 95) { d.canOpen = false; d.canClose = false; }
+            else if (strongTrigger && d.ch === 42) { d.canOpen = false; d.canClose = false; }
+          }
+        }
+      }
       pushNode({ t: 'code', text: code });
       i = found + cnt;
       continue;
