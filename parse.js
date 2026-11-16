@@ -1400,6 +1400,11 @@ function parseInline(text, refs) {
 // True if `label` contains a backtick run of length >= 2 with no matching
 // run of the same length later in the label (doc-28: ``small`).
 function labelHasUnmatchedRun2(label) {
+  // Pair runs of 2+ backticks in order (a run pairs with the first later
+  // run of the same length, forming a code span); a run left unpaired is
+  // unmatched. The old version wrongly flagged the closing run of a
+  // matched pair (doc-33: `` a ` b `` has two matched run-2s, yet the
+  // second one has no run after it).
   let i = 0;
   const n = label.length;
   while (i < n) {
@@ -1409,25 +1414,28 @@ function labelHasUnmatchedRun2(label) {
     let run = 0;
     while (i + run < n && label.charCodeAt(i + run) === 96) run++;
     if (run >= 2) {
-      let j = i + run, found = false;
+      let j = i + run, found = -1;
       while (j < n) {
         if (label.charCodeAt(j) === 96) {
           let r2 = 0;
           while (j + r2 < n && label.charCodeAt(j + r2) === 96) r2++;
-          if (r2 === run) { found = true; break; }
+          if (r2 === run) { found = j; break; }
           j += r2;
         } else j++;
       }
-      if (!found) return true;
+      if (found === -1) return true;
+      i = found + run;
+      continue;
     }
     i += run;
   }
   return false;
 }
 function labelHasUnmatchedRun1(label) {
-  // Count single-backtick runs; they pair in order, so an odd count leaves
-  // one unmatched (doc-22: `a ` b` has three run-1s).
-  let count1 = 0;
+  // A single-backtick run that does NOT pair into a code span blocks the
+  // link (doc-22: `a ` b` has three run-1s; [less `a ` b`] does not form).
+  // Runs inside a formed code span do not count (doc-33: the run-1 inside
+  // `` a ` b `` is content, and the link forms).
   let i = 0;
   const n = label.length;
   while (i < n) {
@@ -1436,10 +1444,26 @@ function labelHasUnmatchedRun1(label) {
     if (c !== 96) { i++; continue; }
     let run = 0;
     while (i + run < n && label.charCodeAt(i + run) === 96) run++;
-    if (run === 1) count1++;
-    i += run;
+    // find a matching run of the same length
+    let j = i + run, found = -1;
+    while (j < n) {
+      if (label.charCodeAt(j) === 96) {
+        let r2 = 0;
+        while (j + r2 < n && label.charCodeAt(j + r2) === 96) r2++;
+        if (r2 === run) { found = j; break; }
+        j += r2;
+      } else j++;
+    }
+    if (found === -1) {
+      // unmatched run: any run-1 that does not pair into a code span
+      // blocks the link ([less `a ` b`] does not form).
+      if (run === 1) return true;
+      i += run;
+      continue;
+    }
+    i = found + run;
   }
-  return (count1 % 2) === 1;
+  return false;
 }
 function labelHasBadBacktick(label, isFullRef) {
   let i = 0;
