@@ -1644,11 +1644,21 @@ function labelHasBadBacktick(label, isFullRef) {
         if (content.length >= 2 && content[0] === ' ' && content[content.length - 1] === ' ' && content.trim() !== '') {
           content = content.slice(1, -1);
         }
-        if (_pendingBadLink !== -1 && (content.indexOf('__') !== -1 || content.indexOf('`') !== -1 || (content.length > 0 && content[content.length - 1] === ' '))) {
+        if (_pendingBadLink !== -1) {
+          // A code span after a bad-backtick link poisons '_' emphasis
+          // before it always, and '*' emphasis only when the code span
+          // content holds '_' / a backtick / a trailing space (doc-09/16/
+          // 28/33/35). The flag persists to the end of the paragraph so a
+          // later code span can poison emphasis that follows an earlier
+          // clean code span (doc-09: _issue table_ is poisoned by the
+          // later `a ` b`, not by the earlier `deno`).
+          const strongTrigger = content.indexOf('_') !== -1 || content.indexOf('`') !== -1 || (content.length > 0 && content[content.length - 1] === ' ');
           for (const d of delims) {
-            if (d.ch === UNDER && d.pos >= _pendingBadLink && d.pos < i) { d.canOpen = false; d.canClose = false; }
+            if (d.pos >= _pendingBadLink && d.pos < i) {
+              if (d.ch === UNDER) { d.canOpen = false; d.canClose = false; }
+              else if (strongTrigger && d.ch === STAR) { d.canOpen = false; d.canClose = false; }
+            }
           }
-          _pendingBadLink = -1;
         }
         addNode({ t: 'code', s: content });
         i = found + run;
@@ -1657,9 +1667,8 @@ function labelHasBadBacktick(label, isFullRef) {
         // link also poisons '_' emphasis before it (doc-09 `h`` case).
         if (_pendingBadLink !== -1) {
           for (const d of delims) {
-            if (d.ch === UNDER && d.pos >= _pendingBadLink && d.pos < i) { d.canOpen = false; d.canClose = false; }
+            if ((d.ch === UNDER || d.ch === STAR) && d.pos >= _pendingBadLink && d.pos < i) { d.canOpen = false; d.canClose = false; }
           }
-          _pendingBadLink = -1;
         }
         addText(text.slice(i, i + run));
         i += run;
