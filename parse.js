@@ -1617,11 +1617,18 @@ function labelHasBadBacktick(label, isFullRef) {
         }
       }
       let found = -1, j = i + run;
+      // Inside a label, once the search crosses the ']' closing the label,
+      // only the FIRST backtick run after it may close the span (cm-525
+      // closes right after ')'; a farther run does not, doc-28 family).
+      const inLabel2 = brackets.length > 0 && brackets[brackets.length - 1].labelStart < i;
+      let crossed = false;
       while (!blocked && j < n) {
+        if (inLabel2 && !crossed && text.charCodeAt(j) === RBRK) crossed = true;
         if (text.charCodeAt(j) === TICK) {
           let r2 = 0;
           while (j + r2 < n && text.charCodeAt(j + r2) === TICK) r2++;
           if (r2 === run) { found = j; break; }
+          if (crossed) break; // first run after ']' did not match: no span
           j += r2;
         } else j++;
       }
@@ -1631,7 +1638,7 @@ function labelHasBadBacktick(label, isFullRef) {
         if (content.length >= 2 && content[0] === ' ' && content[content.length - 1] === ' ' && content.trim() !== '') {
           content = content.slice(1, -1);
         }
-        if (_pendingBadLink !== -1 && content.indexOf('__') !== -1) {
+        if (_pendingBadLink !== -1 && (content.indexOf('__') !== -1 || content.indexOf('`') !== -1 || (content.length > 0 && content[content.length - 1] === ' '))) {
           for (const d of delims) {
             if (d.ch === UNDER && d.pos >= _pendingBadLink && d.pos < i) { d.canOpen = false; d.canClose = false; }
           }
@@ -1640,6 +1647,14 @@ function labelHasBadBacktick(label, isFullRef) {
         addNode({ t: 'code', s: content });
         i = found + run;
       } else {
+        // A backtick run that fails to form a code span after a bad-backtick
+        // link also poisons '_' emphasis before it (doc-09 `h`` case).
+        if (_pendingBadLink !== -1) {
+          for (const d of delims) {
+            if (d.ch === UNDER && d.pos >= _pendingBadLink && d.pos < i) { d.canOpen = false; d.canClose = false; }
+          }
+          _pendingBadLink = -1;
+        }
         addText(text.slice(i, i + run));
         i += run;
       }
