@@ -1832,7 +1832,7 @@ function labelHasBadBacktick(label, isFullRef) {
         }
       }
       if (schemeStart >= 0) {
-        const rest = matchSchemeRest(text, i + 3);
+        const rest = matchSchemeRest(text, i + 3, brackets.length > 0 && brackets[brackets.length - 1].active);
         if (rest) {
           const url = scheme + '://' + rest;
           textBuf.s = s.slice(0, schemeStart);
@@ -1898,7 +1898,7 @@ function labelHasBadBacktick(label, isFullRef) {
       const prevC = i > 0 ? text.charCodeAt(i - 1) : 32;
       const okPrev = i === 0 || isWhitespace(prevC) || isPunct(prevC);
       if (okPrev) {
-        const url = matchExtendedUrl(text, i);
+        const url = matchExtendedUrl(text, i, brackets.length > 0 && brackets[brackets.length - 1].active);
         if (url) {
           const href = cleanUrl('http://' + url);
           if (href !== null) {
@@ -2014,7 +2014,7 @@ function matchEmailForward(text, start) {
   return { local, domain, end: de };
 }
 
-function matchSchemeRest(text, pos) {
+function matchSchemeRest(text, pos, hasActiveBracket) {
   const n = text.length;
   let e = pos;
   // domain: labels of [A-Za-z0-9_-] separated by '.' (dot only if followed by label char)
@@ -2047,7 +2047,15 @@ function matchSchemeRest(text, pos) {
   const openStack = [];
   while (p < n) {
     const c = text.charCodeAt(p);
-    if (c === 32 || c === 9 || c === 10 || c === 60 || c === 62 || c === 91 || c === 93) break;
+    if (c === 32 || c === 9 || c === 10 || c === 60 || c === 62 || c === 91) break;
+    // A ']' immediately after a ')' is swallowed by the autolink ONLY when
+    // it does not close an ACTIVE bracket (doc-08/37: the bracket was
+    // deactivated by an inner link, so ')]' is swallowed; doc-05/09/20:
+    // the bracket is active and the link forms, so the autolink stops).
+    if (c === 93) {
+      if (p > pos && text.charCodeAt(p - 1) === 41 && !hasActiveBracket) { p++; continue; }
+      break;
+    }
     // '&' starting an entity-like reference ends the URL (gfm-627).
     if (c === 38 && isEntityStart(text, p, n)) break;
     if (c === 40) { openStack.push(p); p++; continue; }
@@ -2166,7 +2174,7 @@ function matchHtmlTag(text, pos) {
 }
 
 // Extended autolink: www. URL starting at pos. Returns the URL text or null.
-function matchExtendedUrl(text, pos) {
+function matchExtendedUrl(text, pos, hasActiveBracket) {
   const n = text.length;
   let e = pos;
   // domain: labels of [A-Za-z0-9-]+ separated by '.', must contain a dot + TLD
@@ -2190,7 +2198,15 @@ function matchExtendedUrl(text, pos) {
   const openStack = [];
   while (p < n) {
     const c = text.charCodeAt(p);
-    if (c === 32 || c === 9 || c === 10 || c === 60 || c === 62 || c === 91 || c === 93) break;
+    if (c === 32 || c === 9 || c === 10 || c === 60 || c === 62 || c === 91) break;
+    // A ']' immediately after a ')' is swallowed by the autolink ONLY when
+    // it does not close an ACTIVE bracket (doc-08/37: the bracket was
+    // deactivated by an inner link, so ')]' is swallowed; doc-05/09/20:
+    // the bracket is active and the link forms, so the autolink stops).
+    if (c === 93) {
+      if (p > pos && text.charCodeAt(p - 1) === 41 && !hasActiveBracket) { p++; continue; }
+      break;
+    }
     // '&' starting an entity-like reference ends the URL (gfm-627).
     if (c === 38 && isEntityStart(text, p, n)) break;
     if (c === 40) { openStack.push(p); p++; continue; }
