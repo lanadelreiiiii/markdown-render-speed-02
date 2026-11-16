@@ -797,10 +797,14 @@ function parseBlocks(src) {
 
     // ---- phase 3: finalize unmatched (paragraph deferred to phase 5) ----
     if (!allMatched) {
-      // A fenced code block does NOT swallow lines that fail to match its
-      // containers: the line ends the code block (and the item), it is not
-      // code content (doc-17; the earlier "swallow" assumption was wrong).
-      if (tip.t !== 'paragraph') {
+      // A fenced code block opened inline with a list-item marker does NOT
+      // swallow lines that fail to match its containers: the line ends the
+      // code block (doc-17). A standalone fenced code block DOES swallow
+      // such lines as code content (doc-02) — but only once it already has
+      // content: if the FIRST line after the fence fails to match, the block
+      // closes empty (doc-17 toml fence).
+      const swallow = tip.t === 'code_fenced' && tip._swallow && tip.strings && tip.strings.length > 0;
+      if (tip.t !== 'paragraph' && !swallow) {
         finalizeUpTo(matchedContainer);
         tip = matchedContainer;
       }
@@ -836,21 +840,38 @@ function parseBlocks(src) {
       }
       // content line: strip up to fence indent
       const ind2 = countIndent();
-      const strip = Math.min(ind2, tip._fenceIndent);
+      let strip = Math.min(ind2, tip._fenceIndent);
+      // Never partially consume a leading tab while stripping the fence
+      // indent: if the line starts with a tab whose width exceeds the
+      // remaining strip, leave the tab whole (doc-02: tab at col 4, fence
+      // indent 2 -> full 4 spaces, not 2).
+      if (pos < line.length && line.charCodeAt(pos) === TAB) {
+        const w = 4 - (col % 4);
+        if (strip < w) strip = 0;
+      }
+      // The tab-expansion column is the column after container matching
+      // but BEFORE the fence indent is stripped: top level -> 0 (a leading
+      // tab is preserved, doc-15), list item -> content indent (doc-02).
+      const colBeforeStrip = col;
       advCols(strip);
-      // A leading tab in fenced-code content expands to the next tab stop
-      // from the column where the content starts. Inside a blockquote with a
-      // zero-indent fence the reference counts the content as starting at
-      // column 2 regardless of blockquote depth (a leading tab always
-      // becomes 2 spaces there). With a non-zero fence indent the absolute
-      // column applies (doc-26: indent 2, tab at col 4 -> 4 spaces).
-      let tabCol = col;
-      if (tip._fenceIndent === 0) {
+      // Inside a blockquote with a zero-indent fence the reference counts
+      // the content as starting at column 2 regardless of blockquote depth
+      // (a leading tab always becomes 2 spaces there). With a non-zero
+      // fence indent the absolute column applies (doc-26: indent 2, tab at
+      // col 4 -> 4 spaces).
+      let inBlockquote = false;
+      {
         let anc = tip.parent;
         while (anc) {
-          if (anc.t === 'blockquote') { tabCol = 2; break; }
+          if (anc.t === 'blockquote') { inBlockquote = true; break; }
           anc = anc.parent;
         }
+      }
+      let tabCol;
+      if (inBlockquote) {
+        tabCol = tip._fenceIndent === 0 ? 2 : col;
+      } else {
+        tabCol = colBeforeStrip;
       }
       addLine(tip, expandTabs(restOfLine(), tabCol));
       continue;
@@ -982,7 +1003,19 @@ function parseBlocks(src) {
             }
             if (okInfo) {
               interrupt();
+              // A fence that is the first block of a list item is opened
+              // inline with the marker: it does NOT swallow lines that fail
+              // to match its containers (doc-17). A fence opened as a
+              // standalone block (after a paragraph, at top level, or in a
+              // blockquote) DOES swallow such lines as code content (doc-02).
+              const parent = tip;
+              // Only a fence that is a standalone block inside a list item
+              // swallows lines failing container match (doc-02). A fence
+              // that is the first block of an item (doc-17), or inside a
+              // blockquote / at top level, closes on mismatch.
+              const isFirstInItem = parent.t === 'item' && (!parent.children || parent.children.length === 0);
               const code = addChild(tip, newNode('code_fenced'));
+              code._swallow = parent.t === 'item' && !isFirstInItem;
               code._fenceChar = f.fchar;
               code._fenceLen = f.flen;
               code._fenceIndent = ind5;
