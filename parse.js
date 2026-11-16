@@ -1206,7 +1206,9 @@ function parseBlocks(src) {
         if (restOfLine().trim() === '') break;
         tip = addChild(tip, newNode('paragraph'));
       }
-      let pcontent = restOfLine();
+      // A leading tab on a paragraph line expands to spaces (doc-40);
+      // leading spaces are kept verbatim by expandTabs.
+      let pcontent = expandTabs(restOfLine(), saveCol);
       if (tip.t === 'paragraph' && !allMatched && tip._lastLazy) {
         // a lazy setext-underline line following another lazy line gains
         // 4 spaces (marked quirk, cm-093)
