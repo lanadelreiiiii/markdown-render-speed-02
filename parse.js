@@ -9,9 +9,11 @@
 // email, scheme:email) for the rest of the document (marked quirk);
 // </a> inline clears it; <...> autolinks are unaffected.
 let _inLink = false;
+let _aSelfClose = false;
 
 export function parse(markdown) {
   _inLink = false;
+  _aSelfClose = false;
   return renderDocument(parseBlocks(markdown));
 }
 
@@ -1715,13 +1717,28 @@ function labelHasBadBacktick(label, isFullRef) {
       // inline HTML tag
       const tag = matchHtmlTag(text, i);
       if (tag) {
-        // unclosed inline <a> suppresses extended autolinks for the rest
-        // of the document; inline </a> clears it (doc-03).
+        // Unclosed <a> suppresses extended autolinks for the rest of the
+        // document; inline </a> clears it. Refined (doc-06/33): an <a>
+        // with an href suppresses immediately; a bare <a> does not; a
+        // self-closing <a ... /> suppresses only when another HTML tag
+        // follows it in the same paragraph.
         const low = tag.toLowerCase();
         if (low === '</a>' || low.startsWith('</a>') && (low[4] === ' ' || low[4] === '\t' || low[4] === '\n' || low[4] === '>')) {
           _inLink = false;
-        } else if ((low.startsWith('<a ') || low.startsWith('<a\t') || low.startsWith('<a\n') || low === '<a>' || low.startsWith('<a>')) && !low.endsWith('/>')) {
+          _aSelfClose = false;
+        } else if (low.startsWith('<a') && (low[2] === ' ' || low[2] === '\t' || low[2] === '\n' || low[2] === '>')) {
+          const hasHref = /href\s*=/.test(low);
+          const selfClose = low.endsWith('/>');
+          if (hasHref) {
+            _inLink = true;
+            _aSelfClose = false;
+          } else if (selfClose) {
+            _aSelfClose = true;
+          }
+          // a bare <a> (no href, not self-closing) does not suppress
+        } else if (_aSelfClose) {
           _inLink = true;
+          _aSelfClose = false;
         }
         addRaw(tag);
         i += tag.length;
@@ -1927,6 +1944,7 @@ function labelHasBadBacktick(label, isFullRef) {
 
   // --- emphasis / strikethrough processing (delimiter stack) ---
   processDelimiters(delims, text);
+  _aSelfClose = false;
 
   return nodes;
 }
