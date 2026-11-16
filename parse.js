@@ -851,10 +851,30 @@ function parseBlocks(src) {
         const w = 4 - (col % 4);
         if (strip < w) strip = 0;
       }
+      // Top-level fence (col 0): the indent strip counts whitespace
+      // CHARACTERS, not columns — a leading tab is one character and is
+      // removed whole when within the fence-indent budget (doc-17: fence
+      // indent 3, content '\t' -> 0 spaces; '   \t' -> tab preserved).
+      // (colBeforeStrip must be the column before ANY stripping.)
+      const colBeforeStrip0 = col;
+      if (col === 0 && !tip._inBQ && tip._fenceIndent > 0) {
+        let chars = 0, p = pos;
+        while (p < line.length && chars < tip._fenceIndent) {
+          const c = line.charCodeAt(p);
+          if (c !== SP && c !== TAB) break;
+          chars++; p++;
+        }
+        // advance past exactly those characters (a tab counts as one)
+        while (pos < p) {
+          if (line.charCodeAt(pos) === TAB) { col += 4 - (col % 4); pos++; }
+          else { col++; pos++; }
+        }
+        strip = 0; // already stripped by character count
+      }
       // The tab-expansion column is the column after container matching
       // but BEFORE the fence indent is stripped: top level -> 0 (a leading
       // tab is preserved, doc-15), list item -> content indent (doc-02).
-      const colBeforeStrip = col;
+      const colBeforeStrip = colBeforeStrip0;
       advCols(strip);
       // Inside a blockquote with a zero-indent fence the reference counts
       // the content as starting at column 2 regardless of blockquote depth
@@ -1213,8 +1233,23 @@ function parseBlocks(src) {
         tip = addChild(tip, newNode('paragraph'));
       }
       // A leading tab on a paragraph line expands to spaces (doc-40);
-      // leading spaces are kept verbatim by expandTabs.
-      let pcontent = expandTabs(restOfLine(), saveCol);
+      // leading spaces are kept verbatim by expandTabs. The expansion
+      // column is relative to the enclosing list-item content indents
+      // (doc-17: blockquote inside a list item, tab at absolute col 4
+      // expands as col 2 -> 2 spaces, not 4).
+      let paraListIndent = 0;
+      {
+        let anc = tip;
+        while (anc) {
+          if (anc.t === 'item' && anc._contentIndent) {
+            let p = anc.parent, itemInBQ = false;
+            while (p) { if (p.t === 'blockquote') { itemInBQ = true; break; } p = p.parent; }
+            if (!itemInBQ) paraListIndent += anc._contentIndent;
+          }
+          anc = anc.parent;
+        }
+      }
+      let pcontent = expandTabs(restOfLine(), saveCol - paraListIndent);
       if (tip.t === 'paragraph' && !allMatched && tip._lastLazy) {
         // a lazy setext-underline line following another lazy line gains
         // 4 spaces (marked quirk, cm-093)
