@@ -2500,7 +2500,18 @@ function processDelimiters(delims, text) {
           // Block only when the strong's opener is open-only (preceded by
           // a space, e.g. 'so **change**') — when it can also close
           // ('first**stream**', attached to a word) the outer em forms.
-          if (sp.oi > oi && sp.ci === ci - 1 && sp.closer.canOpen && sp.closer.ch === closer.ch && !sp.opener.canClose) { blocked = true; break; }
+          // The strong's closer need not be the immediately preceding
+          // delimiter: single delimiters in between (doc-11: a lone '*'
+          // after the strong, before the em closer) do not break the
+          // block; a run of 2+ in between does (*a **b**c** d* forms).
+          if (sp.oi > oi && sp.ci < ci && sp.closer.canOpen && sp.closer.ch === closer.ch && !sp.opener.canClose) {
+            let interveningStrong = false;
+            for (let k = sp.ci + 1; k < ci; k++) {
+              const mid = list[k];
+              if (mid.active && mid.len >= 2 && (mid.canOpen || mid.canClose)) { interveningStrong = true; break; }
+            }
+            if (!interveningStrong) { blocked = true; break; }
+          }
         }
         if (blocked) { oi--; continue; }
       }
