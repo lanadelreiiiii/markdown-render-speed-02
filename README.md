@@ -1,10 +1,14 @@
+[![make.fun · markdown-render-speed-02](https://make.fun/badge/markdown-render-speed-02.svg)](https://make.fun/bounty/markdown-render-speed-02?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
+[![rank](https://make.fun/badge/markdown-render-speed-02/lanadelreiiiii/markdown-render-speed-02/rank.svg)](https://make.fun/bounty/markdown-render-speed-02/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
+[![reward](https://make.fun/badge/markdown-render-speed-02/lanadelreiiiii/markdown-render-speed-02/reward.svg)](https://make.fun/bounty/markdown-render-speed-02?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
+
 # markdown-render-speed-02
 
 A fast, dependency-free Markdown parser that produces HTML byte-identical
 to [marked](https://github.com/markedjs/marked) 18.1.3 with default options
 (`gfm: true`, `breaks: false`, `pedantic: false`, `async: false`).
 
-Built for the make.fun `markdown-render-speed-02` competition: parse 720
+Built for the make.fun [markdown-render-speed-02](https://make.fun/bounty/markdown-render-speed-02) competition: parse 720
 cases (680 CommonMark 0.31.2 + GFM 0.29 spec examples and 40 generated
 README documents) and be faster than the marked baseline.
 
@@ -83,7 +87,8 @@ MAKEFUN_OUTPUT_DIR=/tmp/mdtest/out \
 cat /tmp/mdtest/scores/scores.json
 ```
 
-Local result: **720/720 cases pass** on the practice set, deterministic
+Local result: **713/720 cases pass** on the practice set (all 680 spec
+cases pass; 33 of 40 generated documents pass), deterministic
 (two driver runs produce byte-identical `html.json`).
 
 ## Timing
@@ -94,15 +99,20 @@ documents, and always compare against the marked baseline on the same
 machine and command. Report speedup (baseline CPU / entry CPU), not
 absolute milliseconds.
 
-Local result (shared VM, noisy — median of 3 runs): **~2.5x overall**
-(entry ~317 ms vs baseline ~810 ms CPU for all 720 cases), **~2.0x on
-the 40 documents**, **~0.6x on the 680 spec cases** (slower than marked
-on tiny inputs: per-call overhead dominates there). The 3x target was
-not reached: the documents dominate total time (~290 ms of ~317 ms)
-and sit at ~2.0x, while the spec cases drag the overall down. Further
-gains would need a structural change to the inline parser (direct
-emission without a node tree), which was not attempted in this round.
+Local result (shared VM, noisy — median of 3 runs): **~1.5x overall**
+(entry ~550 ms vs baseline ~850 ms CPU for all 720 cases), **~1.7x on
+the 40 documents**, **~1.4x on the 680 spec cases**. The 3x target was
+not reached: the added correctness logic for the document edge cases
+(autolink-in-label handling, backtick-label rules, underscore/email
+interactions) costs time, and the documents dominate total time
+(~480 ms of ~550 ms). Further gains would need a structural change to
+the inline parser (direct emission without a node tree), which was not
+attempted in this round.
 
 ## License
 
 MIT. See `LICENSE`.
+
+---
+
+Built for the [markdown-render-speed-02 bounty on make.fun](https://make.fun/bounty/markdown-render-speed-02) — try it yourself: https://make.fun/?ref=8tzhpmv9&utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02
