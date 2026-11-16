@@ -1288,6 +1288,7 @@ function flanking(text, start, end) {
 }
 
 function parseInline(text, refs) {
+  let _pendingBadLink = -1;
   const nodes = [];
   const delims = [];
   const brackets = [];
@@ -1390,6 +1391,33 @@ function parseInline(text, refs) {
 // link ONLY when the span sits inside an underscore emphasis (_..._) or the
 // link is a full reference [label][ref]. An unmatched backtick run, or a
 // backtick code span without _..._ in an inline link, does NOT block.
+// True if `label` contains a backtick run of length >= 2 with no matching
+// run of the same length later in the label (doc-28: ``small`).
+function labelHasUnmatchedRun2(label) {
+  let i = 0;
+  const n = label.length;
+  while (i < n) {
+    const c = label.charCodeAt(i);
+    if (c === 92 && i + 1 < n) { i += 2; continue; }
+    if (c !== 96) { i++; continue; }
+    let run = 0;
+    while (i + run < n && label.charCodeAt(i + run) === 96) run++;
+    if (run >= 2) {
+      let j = i + run, found = false;
+      while (j < n) {
+        if (label.charCodeAt(j) === 96) {
+          let r2 = 0;
+          while (j + r2 < n && label.charCodeAt(j + r2) === 96) r2++;
+          if (r2 === run) { found = true; break; }
+          j += r2;
+        } else j++;
+      }
+      if (!found) return true;
+    }
+    i += run;
+  }
+  return false;
+}
 function labelHasBadBacktick(label, isFullRef) {
   let i = 0;
   const n = label.length;
@@ -1492,6 +1520,9 @@ function labelHasBadBacktick(label, isFullRef) {
     // Build the link/image node from the nodes after the bracket's content start.
     const clean = cleanUrl(dest);
     if (clean === null) return -1;
+    // A link whose label holds an unmatched run of 2+ backticks poisons
+    // '_' emphasis up to the next code span containing '__' (doc-28).
+    if (!isImage && labelHasUnmatchedRun2(labelText)) _pendingBadLink = endPos;
     // Remove the bracket node (the '[' or '![' text node).
     const bn = br.node;
     const bi = nodes.indexOf(bn);
@@ -1567,9 +1598,26 @@ function labelHasBadBacktick(label, isFullRef) {
     if (c === TICK) {
       let run = 0;
       while (i + run < n && text.charCodeAt(i + run) === TICK) run++;
-      // find a matching run of the same length
+      // find a matching run of the same length. A single backtick in a
+      // label preceded by an unmatched run of 2+ backticks in the same
+      // label does NOT form a code span (doc-28: ``small` stays literal,
+      // the link forms; cm-525 has no such run, its code span forms).
+      let blocked = false;
+      if (run === 1 && brackets.length > 0) {
+        const br = brackets[brackets.length - 1];
+        if (br.labelStart < i) {
+          for (let k = br.labelStart; k < i; k++) {
+            if (text.charCodeAt(k) === TICK) {
+              let r = 0;
+              while (k + r < i && text.charCodeAt(k + r) === TICK) r++;
+              if (r >= 2) { blocked = true; break; }
+              k += r;
+            }
+          }
+        }
+      }
       let found = -1, j = i + run;
-      while (j < n) {
+      while (!blocked && j < n) {
         if (text.charCodeAt(j) === TICK) {
           let r2 = 0;
           while (j + r2 < n && text.charCodeAt(j + r2) === TICK) r2++;
@@ -1582,6 +1630,12 @@ function labelHasBadBacktick(label, isFullRef) {
         content = content.replace(/\n/g, ' ');
         if (content.length >= 2 && content[0] === ' ' && content[content.length - 1] === ' ' && content.trim() !== '') {
           content = content.slice(1, -1);
+        }
+        if (_pendingBadLink !== -1 && content.indexOf('__') !== -1) {
+          for (const d of delims) {
+            if (d.ch === UNDER && d.pos >= _pendingBadLink && d.pos < i) { d.canOpen = false; d.canClose = false; }
+          }
+          _pendingBadLink = -1;
         }
         addNode({ t: 'code', s: content });
         i = found + run;
