@@ -87,8 +87,8 @@ MAKEFUN_OUTPUT_DIR=/tmp/mdtest/out \
 cat /tmp/mdtest/scores/scores.json
 ```
 
-Local result: **713/720 cases pass** on the practice set (all 680 spec
-cases pass; 33 of 40 generated documents pass), deterministic
+Local result: **716/720 cases pass** on the practice set (all 680 spec
+cases pass; 36 of 40 generated documents pass), deterministic
 (two driver runs produce byte-identical `html.json`).
 
 ## Timing
