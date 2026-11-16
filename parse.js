@@ -246,6 +246,21 @@ function parseBlocks(src) {
     return line.slice(pos);
   }
 
+  // A character that cannot start any block (setext underline, table
+  // delimiter row, thematic break, list marker, ATX/fence/HTML/blockquote).
+  // Used to skip the expensive block-start checks for plain paragraph
+  // continuation lines (the common case in long documents).
+  function isPlainStart(c) {
+    if (c === -1) return false;
+    if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c >= 128) return true;
+    // safe punctuation: " ' ( ) , . ; ? ! / \ @ $ % ^ & { } [ ]
+    // (NOT ':' — it can start a table delimiter cell ':-:'.)
+    return c === 34 || c === 39 || c === 40 || c === 41 || c === 44 || c === 46 ||
+      c === 59 || c === 63 || c === 33 || c === 47 || c === 92 ||
+      c === 64 || c === 36 || c === 37 || c === 94 || c === 38 || c === 123 ||
+      c === 125 || c === 91 || c === 93;
+  }
+
   // --- node helpers ---
   function finalize(node) {
     node.open = false;
@@ -1013,6 +1028,23 @@ function parseBlocks(src) {
     }
 
     // ---- phase 5: block-start checks (loop: opening a container re-runs) ----
+    // (interrupt/closeList are defined once per line, not per iteration.)
+    const interrupt = () => {
+      if (tip.t === 'paragraph') {
+        finalize(tip); tip = tip.parent;
+        if (!allMatched) { finalizeUpTo(matchedContainer); tip = matchedContainer; }
+      }
+      closeListIfNotContinued();
+    };
+    const closeListIfNotContinued = () => {
+      if (tip.t === 'list') {
+        if (checkHr()) { finalize(tip); tip = tip.parent; return; }
+        const li0 = listInfoAtCursor();
+        let cont = false;
+        if (li0 && tip._listData.ordered === li0.ordered && tip._listData.bullet === li0.bullet) cont = true;
+        if (!cont) { finalize(tip); tip = tip.parent; }
+      }
+    };
     for (;;) {
       const savePos = pos, saveCol = col, savePtab = ptab;
       const ind5 = countIndent();
@@ -1050,26 +1082,6 @@ function parseBlocks(src) {
         if (li0 && tip._listData.ordered === li0.ordered && tip._listData.bullet === li0.bullet) cont = true;
         if (!cont) { finalize(tip); tip = tip.parent; }
       }
-      // finalize paragraph + unmatched containers when a block interrupts it;
-      // then close a list whose item this line does not continue.
-      const interrupt = () => {
-        if (atPara) {
-          finalize(tip); tip = tip.parent;
-          if (!allMatched) { finalizeUpTo(matchedContainer); tip = matchedContainer; }
-        }
-        closeListIfNotContinued();
-      };
-      const closeListIfNotContinued = () => {
-        if (tip.t === 'list') {
-          // a thematic break is not a list item, even if it looks like one
-          if (checkHr()) { finalize(tip); tip = tip.parent; return; }
-          const li0 = listInfoAtCursor();
-          let cont = false;
-          if (li0 && tip._listData.ordered === li0.ordered && tip._listData.bullet === li0.bullet) cont = true;
-          if (!cont) { finalize(tip); tip = tip.parent; }
-        }
-      };
-
       if (ind5 <= 3) {
         advCols(ind5);
         const c5 = ch();
@@ -1162,7 +1174,9 @@ function parseBlocks(src) {
           }
         }
         // --- setext / table (paragraph open, containers matched) ---
-        if (atPara && allMatched) {
+        // A plain continuation line cannot be a setext underline or a
+        // table delimiter row: skip both checks.
+        if (atPara && allMatched && !isPlainStart(c5)) {
           const sl = checkSetext();
           if (sl > 0) {
             const p = tip;
@@ -1210,14 +1224,14 @@ function parseBlocks(src) {
           }
         }
         // --- thematic break ---
-        if (checkHr()) {
+        if (!isPlainStart(c5) && checkHr()) {
           interrupt();
           const hr = addChild(tip, newNode('hr'));
           finalize(hr);
           break;
         }
         // --- list ---
-        const mk = listInfoAtCursor();
+        const mk = isPlainStart(c5) ? null : listInfoAtCursor();
         if (mk) {
           let canInterrupt = true;
           if (atPara) {
@@ -1326,6 +1340,12 @@ function parseBlocks(src) {
 
 // Escape text, preserving named-entity-like sequences (&name;) verbatim.
 function escapeText(s, out) {
+  // Fast path: no escapable character at all (the common case in
+  // document text) — five C++ indexOf scans beat a JS char loop.
+  if (s.indexOf('&') === -1 && s.indexOf('<') === -1 && s.indexOf('>') === -1 && s.indexOf('"') === -1 && s.indexOf("'") === -1) {
+    out.push(s);
+    return;
+  }
   let i = 0, j = 0;
   const n = s.length;
   while (i < n) {
