@@ -859,17 +859,40 @@ function parseBlocks(src) {
       // (a leading tab always becomes 2 spaces there). With a non-zero
       // fence indent the absolute column applies (doc-26: indent 2, tab at
       // col 4 -> 4 spaces).
-      let inBlockquote = false;
+      // Tab-expansion column: top level keeps the pre-strip column
+      // (0 -> a leading tab is preserved, doc-15). Inside a blockquote the
+      // absolute column applies, minus enclosing list-item indents
+      // (doc-02: list+blockquote, col 6 - 2 = 4); a zero-indent fence in
+      // a blockquote always counts a leading tab as 2 spaces (doc-26).
+      // Tab-expansion column: top level keeps the pre-strip column
+      // (0 -> a leading tab is preserved, doc-15). Inside a blockquote the
+      // absolute column applies; a zero-indent fence there counts a leading
+      // tab as 2 spaces only when no list item intervenes (doc-26), and
+      // the indent of a top-level list item is subtracted (doc-02
+      // isolated: col 6 - 2 = 4). A list item inside a blockquote does
+      // not shift the tab stop.
+      let inBlockquote = false, listIndentSum = 0;
       {
         let anc = tip.parent;
         while (anc) {
-          if (anc.t === 'blockquote') { inBlockquote = true; break; }
+          if (anc.t === 'blockquote') inBlockquote = true;
+          if (anc.t === 'item' && anc._contentIndent) {
+            // Subtract only a list item that is NOT itself inside a
+            // blockquote (an item inside a blockquote does not shift the
+            // tab stop, doc-02; a top-level item does, doc-02 isolated).
+            let p = anc.parent, itemInBQ = false;
+            while (p) { if (p.t === 'blockquote') { itemInBQ = true; break; } p = p.parent; }
+            if (!itemInBQ) listIndentSum += anc._contentIndent;
+          }
           anc = anc.parent;
         }
       }
       let tabCol;
       if (inBlockquote) {
-        tabCol = tip._fenceIndent === 0 ? 2 : col;
+        // Absolute column, minus top-level list-item indents (doc-02).
+        // (A zero-indent fence in a blockquote needs no special case:
+        // its tab is already at column 2, doc-26.)
+        tabCol = col - listIndentSum;
       } else {
         tabCol = colBeforeStrip;
       }
