@@ -273,34 +273,7 @@ function parseBlocks(src) {
     } else if (node.t === 'paragraph') {
       // strip leading link reference definitions
       const text = node.strings.join('\n');
-      let rest = stripRefDefs(text, refs);
-      // A whitespace-only line inside a list item keeps only the spaces
-      // beyond the item's content indent (doc-13: '   ' in an item of
-      // indent 2 is 1 space of content, not 3).
-      {
-        let pli = 0;
-        let anc = node;
-        while (anc) {
-          if (anc.t === 'item' && anc._contentIndent) {
-            let p = anc.parent, itemInBQ = false;
-            while (p) { if (p.t === 'blockquote') { itemInBQ = true; break; } p = p.parent; }
-            if (!itemInBQ) pli += anc._contentIndent;
-          }
-          anc = anc.parent;
-        }
-        if (pli > 0 && rest.indexOf('\n') !== -1) {
-          const lines = rest.split('\n');
-          let changed = false;
-          for (let li2 = 0; li2 < lines.length; li2++) {
-            const L = lines[li2];
-            if (L !== '' && /^[ \t]+$/.test(L)) {
-              lines[li2] = L.slice(Math.min(pli, L.length));
-              changed = true;
-            }
-          }
-          if (changed) rest = lines.join('\n');
-        }
-      }
+      const rest = stripRefDefs(text, refs);
       node._text = rest;
       if (rest === '') node._empty = true;
     }
@@ -924,25 +897,7 @@ function parseBlocks(src) {
       }
       // content line: strip up to fence indent (never inside a blockquote)
       const ind2 = countIndent();
-      // A lazy content line (no container prefix) inside a fenced block
-      // that lives in a blockquote also loses the enclosing list-item
-      // indent (doc-13: fence '  > ``` ' in an item of indent 2, a lazy
-      // '   ' line strips 2 -> 1 space, not 0).
-      let effFenceIndent = tip._fenceIndent;
-      if (!allMatched && !tip._inBQ) {
-        let anc = tip.parent, lis = 0, inBQ = false;
-        while (anc) {
-          if (anc.t === 'blockquote') inBQ = true;
-          if (anc.t === 'item' && anc._contentIndent) {
-            let p = anc.parent, itemInBQ = false;
-            while (p) { if (p.t === 'blockquote') { itemInBQ = true; break; } p = p.parent; }
-            if (!itemInBQ) lis += anc._contentIndent;
-          }
-          anc = anc.parent;
-        }
-        if (inBQ) effFenceIndent = tip._fenceIndent + lis;
-      }
-      let strip = tip._inBQ ? 0 : Math.min(ind2, effFenceIndent);
+      let strip = tip._inBQ ? 0 : Math.min(ind2, tip._fenceIndent);
       // Never partially consume a leading tab while stripping the fence
       // indent: if the line starts with a tab whose width exceeds the
       // remaining strip, leave the tab whole (doc-02: tab at col 4, fence
@@ -1350,12 +1305,6 @@ function parseBlocks(src) {
         }
       }
       let pcontent = expandTabs(restOfLine(), saveCol - paraListIndent);
-      // A whitespace-only paragraph line inside a list item keeps only
-      // the spaces beyond the item's content indent (doc-13: '   ' in
-      // an item of indent 2 is 1 space of content, not 3).
-      if (paraListIndent > 0 && pcontent !== '' && /^[ \t]+$/.test(pcontent)) {
-        pcontent = pcontent.slice(Math.min(paraListIndent, pcontent.length));
-      }
       if (tip.t === 'paragraph' && !allMatched && tip._lastLazy) {
         // a lazy setext-underline line following another lazy line gains
         // 4 spaces (marked quirk, cm-093)
@@ -2742,17 +2691,7 @@ function renderBlock(node, refs, out) {
       if (node._empty) break;
       let text = node._text !== undefined ? node._text : (node.strings ? node.strings.join('\n') : '');
       if (text === '') break;
-      // A whitespace-only line in a paragraph keeps only the spaces
-      // beyond a 2-space list-item indent (doc-13: '   ' is 1 space).
-      if (text.indexOf('\n') !== -1) {
-        const lines = text.split('\n');
-        let changed = false;
-        for (let li2 = 0; li2 < lines.length; li2++) {
-          const L = lines[li2];
-          if (L === '   ') { lines[li2] = ' '; changed = true; }
-        }
-        if (changed) text = lines.join('\n');
-      }
+      // (no paragraph whitespace-only line fix needed here)
       out.push('<p>');
       renderInline(parseInline(text, refs), out);
       out.push('</p>\n');
