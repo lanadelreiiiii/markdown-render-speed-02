@@ -1,8 +1,14 @@
 // parse.js — fast drop-in for marked 18.1.3 (default options: gfm on, breaks
-// off, pedantic off, async off). Hand-written from the CommonMark 0.31.2 /
-// GFM 0.29 specifications and black-box checks of marked's observable
-// output. Single-pass block scan + inline emitter; no token tree, no cache
-// across parse() calls, no regex in the hot path.
+// off, pedantic off, async off). Written from the CommonMark 0.31.2 / GFM
+// 0.29 specifications and black-box probing of marked's observable output.
+// Two passes, no token tree: a line scanner builds blocks, then each text
+// block is parsed inline in one scan. No caching across parse() calls, no
+// input recognition: every call is a pure function of its input string.
+//
+// Speed notes: a single-paragraph input skips the block scanner entirely
+// (parse fast path); plain text runs are found with one C++ regex scan
+// instead of a JS char loop; paragraph continuation lines skip the
+// block-start checks; text with no inline constructs is escaped directly.
 
 // Document-level "inside an unclosed inline <a> tag" flag. An unclosed
 // inline <a> suppresses all GFM extended autolinks (www., scheme://,
@@ -14,7 +20,86 @@ let _aSelfClose = false;
 export function parse(markdown) {
   _inLink = false;
   _aSelfClose = false;
+  const fp = tryFastParagraph(markdown);
+  if (fp !== null) return fp;
   return renderDocument(parseBlocks(markdown));
+}
+
+// Fast path: the whole input is one plain paragraph (no blank line, no
+// line that can start any other block, no tab-indented line, no link
+// reference definition at the start). Returns the HTML, or null to fall
+// through to the full block parser. This covers a large share of the
+// small spec cases, where the block scanner's fixed cost dominates.
+function tryFastParagraph(src) {
+  if (src.indexOf('\r') !== -1) return null;
+  if (src === '') return '';
+  // Cheap rejects before splitting the whole input: an empty line
+  // ('\n\n') is a blank line, so this is not a single paragraph.
+  if (src.indexOf('\n\n') !== -1) return null;
+  // First line: at most 3 leading spaces, no leading tab, first
+  // character plain (and not '[' — a link reference definition).
+  let p = 0, ind = 0;
+  while (p < src.length && src.charCodeAt(p) === SP) { ind++; p++; }
+  if (ind > 3) return null;
+  if (p >= src.length) return null; // blank first line
+  if (src.charCodeAt(p) === TAB) return null;
+  const c0 = src.charCodeAt(p);
+  if (!isPlainStart(c0) || c0 === 91) return null;
+  // A newline inside the first line's leading run means the first line
+  // itself is blank (only spaces before the newline).
+  if (src.charCodeAt(p) === LF) return null;
+  const lines = src.split('\n');
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  if (lines.length === 0) return '';
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
+    if (line.length === 0) return null; // blank line
+    // leading whitespace: at most 3 columns, no tabs (a leading tab has
+    // subtle strip/expand behaviour in the full parser)
+    let ind2 = 0, q = 0;
+    while (q < line.length) {
+      const c = line.charCodeAt(q);
+      if (c === 32) { ind2++; q++; }
+      else if (c === 9) return null;
+      else break;
+    }
+    if (ind2 > 3) return null;
+    if (q >= line.length) return null; // whitespace-only line = blank
+    const c1 = line.charCodeAt(q);
+    if (!isPlainStart(c1)) return null;
+    // a '[' as the first character of the first line can start a link
+    // reference definition, which the paragraph fast path cannot strip
+    if (li === 0 && c1 === 91) return null;
+  }
+  const text = lines.join('\n');
+  const refs = new Map();
+  let out = '<p>';
+  if (isPlainInline(text)) {
+    const frags = [];
+    escapeText(text, frags);
+    out += frags.join('');
+  } else {
+    const frags = [];
+    renderInline(parseInline(text, refs), frags);
+    out += frags.join('');
+  }
+  out += '</p>\n';
+  return out;
+}
+
+// True when a text has no inline construct at all: no backslash, code
+// span, entity, tag, emphasis, link/image bracket, strikethrough, and no
+// GFM autolink trigger (@, ://, www.), and no hard break (2+ spaces
+// before a newline). Such text renders as its own escaping, with
+// newlines kept (a soft break renders as '\n').
+const RE_INLINE_SPECIAL = /[\\`&<*_!\[\]~]/;
+function isPlainInline(text) {
+  if (RE_INLINE_SPECIAL.test(text)) return false;
+  if (text.indexOf('@') !== -1) return false;
+  if (text.indexOf('://') !== -1) return false;
+  if (text.indexOf('www.') !== -1) return false;
+  if (text.indexOf('  \n') !== -1) return false;
+  return true;
 }
 
 // ---------------------------------------------------------------- helpers
@@ -97,15 +182,17 @@ function decodeNumericRef(s, i) {
 }
 
 // cleanUrl: encodeURI + %25 -> % ; null when encodeURI throws.
+// The %25 -> % replacement only matters when the href itself holds a
+// '%', so skip the regex scan otherwise.
 function cleanUrl(href) {
   try {
-    return encodeURI(href).replace(/%25/g, '%');
+    const e = encodeURI(href);
+    return href.indexOf('%') === -1 ? e : e.replace(/%25/g, '%');
   } catch {
     return null;
   }
 }
 
-// Remove backslash escapes (backslash before ASCII punctuation -> the char).
 // Expand tabs in the LEADING whitespace of s to spaces, starting at
 // column startCol (code blocks only). Mid-line tabs are preserved verbatim.
 // A leading tab at column 0 (top-level) is preserved; inside a container
@@ -147,6 +234,21 @@ function normalizeLabel(label) {
   return label.trim().replace(/\s+/g, ' ').toLowerCase().toUpperCase().toLowerCase();
 }
 
+// A character that cannot start any block (setext underline, table
+// delimiter row, thematic break, list marker, ATX/fence/HTML/blockquote).
+// Used to skip the expensive block-start checks for plain paragraph
+// continuation lines (the common case in long documents).
+function isPlainStart(c) {
+  if (c === -1) return false;
+  if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c >= 128) return true;
+  // safe punctuation: " ' ( ) , . ; ? ! / \ @ $ % ^ & { } [ ]
+  // (NOT ':' — it can start a table delimiter cell ':-:'.)
+  return c === 34 || c === 39 || c === 40 || c === 41 || c === 44 || c === 46 ||
+    c === 59 || c === 63 || c === 33 || c === 47 || c === 92 ||
+    c === 64 || c === 36 || c === 37 || c === 94 || c === 38 || c === 123 ||
+    c === 125 || c === 91 || c === 93;
+}
+
 // ---------------------------------------------------------------- block nodes
 
 function newNode(type) {
@@ -165,7 +267,9 @@ function addChild(parent, node) {
 const BLOCK_TAG_NAMES = new Set('address article aside base basefont blockquote body caption center col colgroup dd details dialog dir div dl dt fieldset figcaption figure footer form frame frameset h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main menu menuitem nav noframes ol optgroup option p param search section summary table tbody td tfoot th thead title tr track ul'.split(' '));
 
 function parseBlocks(src) {
-  src = src.replace(/\r\n?/g, '\n');
+  // Skip the CR normalization (and the full-string copy it entails)
+  // when the input has no carriage return at all (the common case).
+  if (src.indexOf('\r') !== -1) src = src.replace(/\r\n?/g, '\n');
   const lines = src.split('\n');
   if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
   const refs = new Map();
@@ -244,21 +348,6 @@ function parseBlocks(src) {
   function restOfLine() {
     if (ptab > 0) return ' '.repeat(ptab) + line.slice(pos + 1);
     return line.slice(pos);
-  }
-
-  // A character that cannot start any block (setext underline, table
-  // delimiter row, thematic break, list marker, ATX/fence/HTML/blockquote).
-  // Used to skip the expensive block-start checks for plain paragraph
-  // continuation lines (the common case in long documents).
-  function isPlainStart(c) {
-    if (c === -1) return false;
-    if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c >= 128) return true;
-    // safe punctuation: " ' ( ) , . ; ? ! / \ @ $ % ^ & { } [ ]
-    // (NOT ':' — it can start a table delimiter cell ':-:'.)
-    return c === 34 || c === 39 || c === 40 || c === 41 || c === 44 || c === 46 ||
-      c === 59 || c === 63 || c === 33 || c === 47 || c === 92 ||
-      c === 64 || c === 36 || c === 37 || c === 94 || c === 38 || c === 123 ||
-      c === 125 || c === 91 || c === 93;
   }
 
   // --- node helpers ---
@@ -633,7 +722,6 @@ function parseBlocks(src) {
       const left = t.startsWith(':');
       const right = t.endsWith(':');
       const core = t.replace(/^:/, '').replace(/:$/, '');
-      if (!/^ -+$/.test(core) && !/^-+$/.test(core)) return null;
       if (!/^-+$/.test(core)) return null;
       aligns.push(left && right ? 'center' : right ? 'right' : left ? 'left' : null);
     }
@@ -674,6 +762,23 @@ function parseBlocks(src) {
     line = lines[li];
     pos = 0; col = 0; ptab = 0;
     const blank = isBlankLine();
+
+    // ---- ultra-fast path: top-level paragraph continuation ----
+    // A paragraph that is a direct child of the document has no
+    // containers to match (phase 1 is a no-op, allMatched is always
+    // true). A non-blank line with at most 3 leading spaces whose
+    // first character cannot start any block is plain paragraph text:
+    // append it directly, skipping phases 1-5. This is the most
+    // common line in long documents.
+    if (!blank && tip.t === 'paragraph' && tip.parent === doc) {
+      let p0 = 0;
+      while (p0 < line.length && line.charCodeAt(p0) === SP) p0++;
+      if (p0 <= 3 && p0 < line.length && isPlainStart(line.charCodeAt(p0))) {
+        addLine(tip, line);
+        tip._lastLazy = false;
+        continue;
+      }
+    }
 
     // ---- phase 1: match open containers ----
     let container = doc;
@@ -1085,6 +1190,20 @@ function parseBlocks(src) {
       if (ind5 <= 3) {
         advCols(ind5);
         const c5 = ch();
+        // --- FAST PATH: plain paragraph continuation ---
+        // A matched line whose first character cannot start any block is
+        // plain paragraph text: skip every block-start check and append
+        // it directly. This is the common line in long documents.
+        // (allMatched: no lazy-continuation quirks apply; isPlainStart
+        // excludes setext/table/hr/list/ATX/fence/HTML/blockquote starts;
+        // ind<=3 excludes indented code.)
+        if (atPara && allMatched && isPlainStart(c5)) {
+          pos = savePos; col = saveCol; ptab = savePtab;
+          const pcontent = expandTabs(restOfLine(), saveCol - (tip._pli || 0));
+          addLine(tip, pcontent);
+          tip._lastLazy = false;
+          break;
+        }
         // --- blockquote ---
         if (c5 === GT) {
           interrupt();
@@ -1300,25 +1419,29 @@ function parseBlocks(src) {
         // no (real) content left (e.g. an empty blockquote line): no paragraph
         if (restOfLine().trim() === '') break;
         tip = addChild(tip, newNode('paragraph'));
+        // Cache the enclosing list-item indent sum for this paragraph:
+        // the ancestor chain is fixed once the paragraph is created, so
+        // the continuation fast path need not walk it per line.
+        let pli = 0;
+        {
+          let anc = tip;
+          while (anc) {
+            if (anc.t === 'item' && anc._contentIndent) {
+              let p = anc.parent, itemInBQ = false;
+              while (p) { if (p.t === 'blockquote') { itemInBQ = true; break; } p = p.parent; }
+              if (!itemInBQ) pli += anc._contentIndent;
+            }
+            anc = anc.parent;
+          }
+        }
+        tip._pli = pli;
       }
       // A leading tab on a paragraph line expands to spaces (doc-40);
       // leading spaces are kept verbatim by expandTabs. The expansion
       // column is relative to the enclosing list-item content indents
       // (doc-17: blockquote inside a list item, tab at absolute col 4
       // expands as col 2 -> 2 spaces, not 4).
-      let paraListIndent = 0;
-      {
-        let anc = tip;
-        while (anc) {
-          if (anc.t === 'item' && anc._contentIndent) {
-            let p = anc.parent, itemInBQ = false;
-            while (p) { if (p.t === 'blockquote') { itemInBQ = true; break; } p = p.parent; }
-            if (!itemInBQ) paraListIndent += anc._contentIndent;
-          }
-          anc = anc.parent;
-        }
-      }
-      let pcontent = expandTabs(restOfLine(), saveCol - paraListIndent);
+      let pcontent = expandTabs(restOfLine(), saveCol - (tip._pli || 0));
       if (tip.t === 'paragraph' && !allMatched && tip._lastLazy) {
         // a lazy setext-underline line following another lazy line gains
         // 4 spaces (marked quirk, cm-093)
@@ -1402,6 +1525,13 @@ function flanking(text, start, end) {
   const rightFlanking = !prevWs && (!prevPunct || nextWs || nextPunct);
   return { left: leftFlanking, right: rightFlanking };
 }
+
+// Next-special scan for the inline loop: the same stop set as the
+// per-char dispatch (backslash, backtick, newline, &, <, [, ], !, *,
+// _, ~, :, @) plus the literal 'www.' (a lone 'w' is ordinary text, so
+// matching 'www.' as a unit avoids waking up at every 'w'). One C++
+// regex scan replaces a JS char loop over plain text runs.
+const RE_NEXT_SPECIAL = /[\\`\n&<\[\]!*_~:@]|www\./g;
 
 function parseInline(text, refs) {
   let _pendingBadLink = -1;
@@ -1631,10 +1761,13 @@ function labelHasBadBacktick(label, isFullRef) {
     // find the label text (raw, between '[' and ']')
     const labelStart = br.labelStart; // index just after '['
     const labelText = text.slice(labelStart, closePos);
+    // The backtick checks below only matter when the label holds a
+    // backtick at all (the common label has none — skip three scans).
+    const labelHasTick = labelText.indexOf('`') !== -1;
     // A code span with a backtick inside blocks the link only inside an
     // underscore emphasis or for a full-reference link (doc-16/18/20/23).
     const afterClose = text[closePos + 1];
-    if (labelHasBadBacktick(labelText, afterClose === '[')) {
+    if (labelHasTick && labelHasBadBacktick(labelText, afterClose === '[')) {
       // The label's underscore emphasis also does NOT form: deactivate the
       // '_' delimiters inside the label so they stay literal.
       for (const d of delims) {
@@ -1647,7 +1780,7 @@ function labelHasBadBacktick(label, isFullRef) {
     // A label with an unmatched single backtick blocks the link, unless
     // it also holds an unmatched run of 2+ backticks (doc-22: [a `x ` y` b]
     // does not form, [a ``x` b] does).
-    if (labelHasUnmatchedRun1(labelText) && !labelHasUnmatchedRun2(labelText)) return -1;
+    if (labelHasTick && labelHasUnmatchedRun1(labelText) && !labelHasUnmatchedRun2(labelText)) return -1;
 
     // parse what follows ']'
     let p = closePos + 1;
@@ -1685,13 +1818,19 @@ function labelHasBadBacktick(label, isFullRef) {
     if (clean === null) return -1;
     // A link whose label holds an unmatched run of 2+ backticks poisons
     // '_' emphasis up to the next code span containing '__' (doc-28).
-    if (!isImage && labelHasUnmatchedRun2(labelText)) _pendingBadLink = endPos;
+    if (!isImage && labelHasTick && labelHasUnmatchedRun2(labelText)) _pendingBadLink = endPos;
     // Remove the bracket node (the '[' or '![' text node).
+    // br.nodeIndex - 1 is the bracket node's index: no splice can have
+    // shifted it, because a splice only removes nodes inside a link
+    // that forms later, and any bracket inside that link resolves
+    // before the link does (or is deactivated by it).
     const bn = br.node;
-    const bi = nodes.indexOf(bn);
-    if (bi !== -1) nodes.splice(bi, 1);
-    // Content nodes start at br.nodeIndex - 1 after removing the bracket node.
     const startIdx = br.nodeIndex - 1;
+    if (nodes[startIdx] === bn) nodes.splice(startIdx, 1);
+    else {
+      const bi = nodes.indexOf(bn);
+      if (bi !== -1) nodes.splice(bi, 1);
+    }
     const linkChildren = nodes.slice(startIdx);
     nodes.length = startIdx;
     textBuf = null;
@@ -1718,7 +1857,18 @@ function labelHasBadBacktick(label, isFullRef) {
   }
 
   // --- main scan ---
+  // Plain text runs are skipped with one C++ regex scan (RE_NEXT_SPECIAL)
+  // instead of a JS char loop; the dispatch below only runs at special
+  // characters, with the same handlers as a per-char scan.
   while (i < n) {
+    RE_NEXT_SPECIAL.lastIndex = i;
+    const m = RE_NEXT_SPECIAL.exec(text);
+    const next = m ? m.index : n;
+    if (next > i) {
+      addText(text.slice(i, next));
+      i = next;
+      if (i >= n) break;
+    }
     const c = text.charCodeAt(i);
     // backslash escape
     if (c === BSLASH && i + 1 < n && text.charCodeAt(i + 1) < 128 && ASCII_PUNCT[text.charCodeAt(i + 1)] === 1) {
@@ -2011,6 +2161,10 @@ function labelHasBadBacktick(label, isFullRef) {
           }
         }
       }
+      // no scheme:// formed: ':' is ordinary text
+      addText(':');
+      i++;
+      continue;
     }
     // scheme:email autolink (mailto:foo@bar.baz, xmpp:foo@bar.baz/txt)
     if (c === COLON && !_inLink && textBuf) {
@@ -2058,6 +2212,10 @@ function labelHasBadBacktick(label, isFullRef) {
           }
         }
       }
+      // no scheme:email formed: ':' is ordinary text
+      addText(':');
+      i++;
+      continue;
     }
     // extended autolink: www.
     if (c === 119 && !_inLink && text.startsWith('www.', i)) { // 'w'
@@ -2074,6 +2232,10 @@ function labelHasBadBacktick(label, isFullRef) {
           }
         }
       }
+      // not a www. autolink: 'w' is ordinary text
+      addText('w');
+      i++;
+      continue;
     }
     // extended autolink: email (on '@')
     if (c === 64 && !_inLink) { // '@'
@@ -2096,16 +2258,11 @@ function labelHasBadBacktick(label, isFullRef) {
       i++;
       continue;
     }
-    // ordinary char: fast path — append a run of non-special chars
-    let j = i;
-    while (j < n) {
-      const cc = text.charCodeAt(j);
-      if (cc === BSLASH || cc === TICK || cc === AMP || cc === LT || cc === LBRK || cc === RBRK || cc === BANG || cc === STAR || cc === UNDER || cc === TILDE || cc === LF || cc === 64 || cc === 119 || cc === COLON) break;
-      j++;
-    }
-    if (j === i) j = i + 1; // single char (e.g. 'w' not starting www.)
-    addText(text.slice(i, j));
-    i = j;
+    // Any other special char the dispatch did not consume (a lone '!',
+    // a ':' with _inLink set, a 'w' with _inLink set, an '@' with
+    // _inLink set): it is ordinary text.
+    addText(text[i]);
+    i++;
   }
 
   // --- emphasis / strikethrough processing (delimiter stack) ---
@@ -2705,22 +2862,31 @@ function renderDocument(parsed) {
   return out.join('');
 }
 
+// Render one text block's inline content, fast-pathed when the text has
+// no inline construct (plain text escapes directly, no node tree).
+function renderTextBlock(text, refs, out) {
+  if (isPlainInline(text)) {
+    escapeText(text, out);
+  } else {
+    renderInline(parseInline(text, refs), out);
+  }
+}
+
 function renderBlock(node, refs, out) {
   switch (node.t) {
     case 'paragraph': {
       if (node._empty) break;
       let text = node._text !== undefined ? node._text : (node.strings ? node.strings.join('\n') : '');
       if (text === '') break;
-      // (no paragraph whitespace-only line fix needed here)
       out.push('<p>');
-      renderInline(parseInline(text, refs), out);
+      renderTextBlock(text, refs, out);
       out.push('</p>\n');
       break;
     }
     case 'heading': {
       const text = node._text || '';
       out.push('<h' + node._level + '>');
-      renderInline(parseInline(text, refs), out);
+      renderTextBlock(text, refs, out);
       out.push('</h' + node._level + '>\n');
       break;
     }
@@ -2804,12 +2970,12 @@ function renderBlock(node, refs, out) {
         if (child.t === 'paragraph' && tight) {
           if (k === 0 && taskHtml) { out.push(taskHtml); out.push(' '); }
           const text = child._text !== undefined ? child._text : (child.strings ? child.strings.join('\n') : '');
-          if (text !== '') renderInline(parseInline(text, refs), out);
+          if (text !== '') renderTextBlock(text, refs, out);
         } else if (child.t === 'paragraph' && k === 0 && taskHtml) {
           out.push('<p>');
           out.push(taskHtml); out.push(' ');
           const text = child._text !== undefined ? child._text : (child.strings ? child.strings.join('\n') : '');
-          renderInline(parseInline(text, refs), out);
+          renderTextBlock(text, refs, out);
           out.push('</p>\n');
         } else {
           renderBlock(child, refs, out);
@@ -2825,7 +2991,7 @@ function renderBlock(node, refs, out) {
         out.push('<th');
         if (align) out.push(' align="' + align + '"');
         out.push('>');
-        renderInline(parseInline(node._header[k], refs), out);
+        renderTextBlock(node._header[k], refs, out);
         out.push('</th>\n');
       }
       out.push('</tr>\n</thead>\n');
@@ -2838,7 +3004,7 @@ function renderBlock(node, refs, out) {
             out.push('<td');
             if (align) out.push(' align="' + align + '"');
             out.push('>');
-            renderInline(parseInline(row[k], refs), out);
+            renderTextBlock(row[k], refs, out);
             out.push('</td>\n');
           }
           out.push('</tr>\n');
