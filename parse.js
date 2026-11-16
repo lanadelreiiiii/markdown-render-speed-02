@@ -2451,10 +2451,46 @@ function processDelimiters(delims, text) {
       const tag = closer.ch === TILDE ? 'del' : (use === 2 ? 'strong' : 'em');
       if (use === 2 && closer.ch !== TILDE) strongSpans.push({ oi, ci, closer, opener });
       addInsertion(opener.node, opener.offset + opener.len - use, use, tag, true);
-      addInsertion(closer.node, closer.offset, use, tag, false);
+      // The closer run is consumed from the END (like the opener) when
+      // its leftover delimiters cannot match any opener: the leftover
+      // then stays literal INSIDE the emphasis (doc-30: **by command
+      // *tool*one*** -> <strong>...one*</strong>). When the leftover CAN
+      // match (***a***: the opener still has 1 left), consume from the
+      // start so the later match's closing tag sorts after this one.
+      const leftover = closer.len - use;
+      let leftoverCanMatch = false;
+      if (leftover > 0) {
+        if (opener.len - use > 0) leftoverCanMatch = true;
+        else {
+          for (let k = ci - 1; k >= 0; k--) {
+            if (k === oi) continue; // current opener: already counted above
+            const od = list[k];
+            if (od.active && od.len > 0 && od.canOpen && od.ch === closer.ch && od.scope === closer.scope) { leftoverCanMatch = true; break; }
+          }
+        }
+      }
+      // End-consumption (leftover inside) only when the word right
+      // before this closer run is immediately preceded by a SINGLE
+      // delimiter of the same char that closed an emphasis
+      // (**a *b*c*** -> inside, **a *b* c*** / **foo*** -> outside).
+      let insideLeftover = false;
+      if (use === 2 && leftover > 0 && !leftoverCanMatch && closer.pos !== undefined) {
+        let w = closer.pos - 1;
+        while (w >= 0 && isAlnum(text.charCodeAt(w))) w--;
+        if (w >= 0 && text.charCodeAt(w) === closer.ch
+          && (w === 0 || text.charCodeAt(w - 1) !== closer.ch)) insideLeftover = true;
+      }
+      if (insideLeftover) {
+        // place the closing tag after the leftover chars
+        addInsertion(closer.node, closer.offset + leftover, use, tag, false);
+        closer.offset += closer.len;
+        closer.len = 0;
+      } else {
+        addInsertion(closer.node, closer.offset, use, tag, false);
+        closer.offset += use;
+        closer.len -= use;
+      }
       opener.len -= use;
-      closer.len -= use;
-      closer.offset += use;
       closer._lastOpener = opener;
       // Scope delimiters strictly inside this emphasis span (same level as
       // the opener/closer) so they cannot match outside the span.
