@@ -2071,7 +2071,9 @@ function matchSchemeRest(text, pos, hasActiveBracket) {
       let opens = 0, closes = 0;
       for (let q = pos; q < end; q++) {
         if (text.charCodeAt(q) === 40) opens++;
-        else if (text.charCodeAt(q) === 41) closes++;
+        // A ')' immediately followed by ']' closes a paren outside the
+        // URL (the swallowed ')]'); it does not count toward imbalance.
+        else if (text.charCodeAt(q) === 41 && !(q + 1 < end && text.charCodeAt(q + 1) === 93)) closes++;
       }
       if (closes > opens) { end--; continue; }
     }
@@ -2223,7 +2225,9 @@ function matchExtendedUrl(text, pos, hasActiveBracket) {
       let opens = 0, closes = 0;
       for (let q = pos; q < end; q++) {
         if (text.charCodeAt(q) === 40) opens++;
-        else if (text.charCodeAt(q) === 41) closes++;
+        // A ')' immediately followed by ']' closes a paren outside the
+        // URL (the swallowed ')]'); it does not count toward imbalance.
+        else if (text.charCodeAt(q) === 41 && !(q + 1 < end && text.charCodeAt(q + 1) === 93)) closes++;
       }
       if (closes > opens) { end--; continue; }
     }
