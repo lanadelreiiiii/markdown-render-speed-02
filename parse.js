@@ -838,9 +838,9 @@ function parseBlocks(src) {
         }
         pos = savePos; col = saveCol; ptab = savePtab;
       }
-      // content line: strip up to fence indent
+      // content line: strip up to fence indent (never inside a blockquote)
       const ind2 = countIndent();
-      let strip = Math.min(ind2, tip._fenceIndent);
+      let strip = tip._inBQ ? 0 : Math.min(ind2, tip._fenceIndent);
       // Never partially consume a leading tab while stripping the fence
       // indent: if the line starts with a tab whose width exceeds the
       // remaining strip, leave the tab whole (doc-02: tab at col 4, fence
@@ -1050,6 +1050,10 @@ function parseBlocks(src) {
               code._fenceChar = f.fchar;
               code._fenceLen = f.flen;
               code._fenceIndent = ind5;
+              // A tilde fence never strips its indent from content lines
+              // (doc-22: '~~~ts' keeps 3 spaces; top-level '  ~~~ts' also
+              // keeps them). A backtick fence strips normally (doc-15).
+              code._inBQ = f.fchar === TILDE;
               let infoRaw = line.slice(pos + f.flen);
               let q = 0;
               while (q < infoRaw.length && (infoRaw.charCodeAt(q) === SP || infoRaw.charCodeAt(q) === TAB)) q++;
