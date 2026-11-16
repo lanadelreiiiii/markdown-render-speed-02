@@ -2251,6 +2251,20 @@ function processDelimiters(delims, text) {
       }
       // match
       const use = (opener.len >= 2 && closer.len >= 2) ? 2 : 1;
+      // A single-delimiter closer does not match a double opener when
+      // the word before it is immediately preceded by a single delimiter
+      // that closed an emphasis (*so*other* -> the * after 'other' stays
+      // literal and the outer ** forms a strong). A double delimiter
+      // before the word (**parse**parse*) does NOT block.
+      if (use === 1 && opener.len >= 2 && closer.len === 1 && closer.pos !== undefined) {
+        let w = closer.pos - 1;
+        while (w >= 0 && isAlnum(text.charCodeAt(w))) w--;
+        const before = w;
+        if (before >= 0 && text.charCodeAt(before) === closer.ch
+          && (before === 0 || text.charCodeAt(before - 1) !== closer.ch)) {
+          oi--; continue;
+        }
+      }
       // An em (use 1) of the same char does not form around a strong whose
       // closing delimiter can also open and is the nearest delimiter span
       // just before this closer: *a **b**c*. If another delimiter follows
