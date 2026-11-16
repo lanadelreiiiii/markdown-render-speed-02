@@ -6,7 +6,7 @@ to [marked](https://github.com/markedjs/marked) 18.1.3 with default options
 
 Built for the make.fun `markdown-render-speed-02` competition: parse 720
 cases (680 CommonMark 0.31.2 + GFM 0.29 spec examples and 40 generated
-README documents) and be at least 3x faster than the marked baseline.
+README documents) and be faster than the marked baseline.
 
 ## Files
 
@@ -17,6 +17,8 @@ README documents) and be at least 3x faster than the marked baseline.
 - `main.ts` — the competition driver. Reads `MAKEFUN_INPUT_DIR` /
   `MAKEFUN_OUTPUT_DIR` (defaulting to `/input` and `/output`), parses
   every case in `cases.json` in order, and writes `html.json`.
+- `package.json` — `{"type": "module"}` so Node loads the ES modules
+  without the typeless-package reparse warning.
 - `LICENSE` — MIT.
 
 ## How it works
@@ -37,9 +39,16 @@ Two passes, no token tree:
    3 and link/image scoping). Output is emitted as string fragments
    joined once.
 
-Hot-path choices: dispatch on `charCodeAt`, `indexOf` instead of
-regex, manual HTML escaping with a fast path for plain text, and a
-single `join` per document.
+Hot-path choices: a single-paragraph fast path that skips the block
+scanner; plain-text runs found with one C++ regex scan instead of a
+JS char loop; plain paragraph continuations skip the block-start
+checks (plus an ultra-fast path for top-level paragraphs); text with
+no inline construct is escaped directly without building a node tree;
+dispatch on `charCodeAt`, `indexOf` instead of regex, manual HTML
+escaping with a fast path for plain text, and a single `join` per
+document. CR normalisation is skipped when the input holds no `\r`,
+and link-label backtick scans are skipped when the label holds no
+backtick.
 
 ## Correctness notes (verified by black-box probing against marked)
 
@@ -74,7 +83,8 @@ MAKEFUN_OUTPUT_DIR=/tmp/mdtest/out \
 cat /tmp/mdtest/scores/scores.json
 ```
 
-Local result: **720/720 cases pass** on the practice set.
+Local result: **720/720 cases pass** on the practice set, deterministic
+(two driver runs produce byte-identical `html.json`).
 
 ## Timing
 
@@ -83,6 +93,15 @@ Measure with `process.cpuUsage()` around the parse loop (1 warmup run
 documents, and always compare against the marked baseline on the same
 machine and command. Report speedup (baseline CPU / entry CPU), not
 absolute milliseconds.
+
+Local result (shared VM, noisy — median of 3 runs): **~2.5x overall**
+(entry ~317 ms vs baseline ~810 ms CPU for all 720 cases), **~2.0x on
+the 40 documents**, **~0.6x on the 680 spec cases** (slower than marked
+on tiny inputs: per-call overhead dominates there). The 3x target was
+not reached: the documents dominate total time (~290 ms of ~317 ms)
+and sit at ~2.0x, while the spec cases drag the overall down. Further
+gains would need a structural change to the inline parser (direct
+emission without a node tree), which was not attempted in this round.
 
 ## License
 
