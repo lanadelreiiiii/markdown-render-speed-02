@@ -273,7 +273,34 @@ function parseBlocks(src) {
     } else if (node.t === 'paragraph') {
       // strip leading link reference definitions
       const text = node.strings.join('\n');
-      const rest = stripRefDefs(text, refs);
+      let rest = stripRefDefs(text, refs);
+      // A whitespace-only line inside a list item keeps only the spaces
+      // beyond the item's content indent (doc-13: '   ' in an item of
+      // indent 2 is 1 space of content, not 3).
+      {
+        let pli = 0;
+        let anc = node;
+        while (anc) {
+          if (anc.t === 'item' && anc._contentIndent) {
+            let p = anc.parent, itemInBQ = false;
+            while (p) { if (p.t === 'blockquote') { itemInBQ = true; break; } p = p.parent; }
+            if (!itemInBQ) pli += anc._contentIndent;
+          }
+          anc = anc.parent;
+        }
+        if (pli > 0 && rest.indexOf('\n') !== -1) {
+          const lines = rest.split('\n');
+          let changed = false;
+          for (let li2 = 0; li2 < lines.length; li2++) {
+            const L = lines[li2];
+            if (L !== '' && /^[ \t]+$/.test(L)) {
+              lines[li2] = L.slice(Math.min(pli, L.length));
+              changed = true;
+            }
+          }
+          if (changed) rest = lines.join('\n');
+        }
+      }
       node._text = rest;
       if (rest === '') node._empty = true;
     }
@@ -317,17 +344,17 @@ function parseBlocks(src) {
         if (c === '\\' && j + 1 < n && isPunct(text.charCodeAt(j + 1))) { label += text[j] + text[j + 1]; j += 2; continue; }
         label += c; j++;
       }
-      if (!ok || j >= n || label.length === 0) break;
+      if (!ok || j >= n || label.length === 0) { i = save; break; }
       j++; // past ']'
       // optional spaces/tabs (not newlines yet), then ':'
       let k = j;
       while (k < n && (text[k] === ' ' || text[k] === '\t')) k++;
-      if (k >= n || text[k] !== ':') break;
+      if (k >= n || text[k] !== ':') { i = save; break; }
       k++;
       // skip spaces/tabs/newlines (dest may be on next line)
       let m = k;
       while (m < n && (text[m] === ' ' || text[m] === '\t' || text[m] === '\n')) m++;
-      if (m >= n) break;
+      if (m >= n) { i = save; break; }
       // destination
       let dest = null, end = m;
       if (text[m] === '<') {
@@ -336,7 +363,7 @@ function parseBlocks(src) {
           if (text[e] === '\\' && e + 1 < n && isPunct(text.charCodeAt(e + 1))) { e += 2; continue; }
           e++;
         }
-        if (e >= n || text[e] !== '>') break;
+        if (e >= n || text[e] !== '>') { i = save; break; }
         dest = text.slice(m + 1, e);
         end = e + 1;
       } else {
@@ -352,7 +379,7 @@ function parseBlocks(src) {
           }
           e++;
         }
-        if (e === m) break; // empty dest
+        if (e === m) { i = save; break; } // empty dest
         dest = text.slice(m, e);
         end = e;
       }
@@ -364,7 +391,7 @@ function parseBlocks(src) {
       const hasWsBeforeTitle = t > end;
       if (t < n && (text[t] === '"' || text[t] === "'" || text[t] === '(') && !hasWsBeforeTitle) {
         // title glued to dest: not a title, so this is junk after the dest
-        break;
+        { i = save; break; }
       }
       if (t < n && (text[t] === '"' || text[t] === "'" || text[t] === '(')) {
         const q = text[t];
@@ -381,10 +408,10 @@ function parseBlocks(src) {
           // after title: only spaces/tabs then newline or EOF
           let u = endAfterTitle;
           while (u < n && (text[u] === ' ' || text[u] === '\t')) u++;
-          if (u < n && text[u] !== '\n') { /* junk after title: whole def fails */ break; }
+          if (u < n && text[u] !== '\n') { /* junk after title: whole def fails */ i = save; break; }
           endAfterTitle = u;
         } else if (q === '(') {
-          break; // '(' title must close on same line-ish; treat as failed def
+          i = save; break; // '(' title must close on same line-ish; treat as failed def
         } else {
           // quote title may span lines; try again allowing newline
           let e2 = t + 1, ok2 = true;
@@ -397,17 +424,17 @@ function parseBlocks(src) {
             endAfterTitle = e2 + 1;
             let u = endAfterTitle;
             while (u < n && (text[u] === ' ' || text[u] === '\t')) u++;
-            if (u < n && text[u] !== '\n') break;
+            if (u < n && text[u] !== '\n') { i = save; break; }
             endAfterTitle = u;
           } else {
-            break;
+            i = save; break;
           }
         }
       } else {
         // no title: after dest, only spaces/tabs then newline or EOF
         let u = end;
         while (u < n && (text[u] === ' ' || text[u] === '\t')) u++;
-        if (u < n && text[u] !== '\n') break;
+        if (u < n && text[u] !== '\n') { i = save; break; }
         endAfterTitle = u;
       }
       // title on the NEXT line (when not found on same line)
@@ -772,6 +799,40 @@ function parseBlocks(src) {
         // A blank line here is code content, not a block separator, so it
         // must not mark the enclosing item/list as ending with a blank line
         // (that would wrongly make a tight list loose, cm-318).
+        // A lazy blank line (no container prefix) in a fence inside a
+        // blockquote still loses the enclosing list-item indent (doc-13:
+        // '   ' in an item of indent 2 is 1 space of code, not 3).
+        let blankStrip = 0;
+        if (!allMatched && !tip._inBQ) {
+          let anc = tip.parent, lis = 0, inBQ = false;
+          while (anc) {
+            if (anc.t === 'blockquote') inBQ = true;
+            if (anc.t === 'item' && anc._contentIndent) {
+              let p = anc.parent, itemInBQ = false;
+              while (p) { if (p.t === 'blockquote') { itemInBQ = true; break; } p = p.parent; }
+              if (!itemInBQ) lis += anc._contentIndent;
+            }
+            anc = anc.parent;
+          }
+          if (inBQ) blankStrip = tip._fenceIndent + lis;
+        } else if (!tip._inBQ) {
+          blankStrip = tip._fenceIndent;
+        }
+        if (blankStrip > 0) {
+          // A whitespace-only line strips by CHARACTER count (a tab is
+          // one character): '   ' with budget 2 -> ' '; a lone '\t'
+          // with budget 2 -> '' (doc-13).
+          let chars = 0, p = pos;
+          while (p < line.length && chars < blankStrip) {
+            const c = line.charCodeAt(p);
+            if (c !== SP && c !== TAB) break;
+            chars++; p++;
+          }
+          while (pos < p) {
+            if (line.charCodeAt(pos) === TAB) { col += 4 - (col % 4); pos++; }
+            else { col++; pos++; }
+          }
+        }
         addLine(tip, expandTabs(restOfLine(), col));
         continue;
       }
@@ -863,7 +924,25 @@ function parseBlocks(src) {
       }
       // content line: strip up to fence indent (never inside a blockquote)
       const ind2 = countIndent();
-      let strip = tip._inBQ ? 0 : Math.min(ind2, tip._fenceIndent);
+      // A lazy content line (no container prefix) inside a fenced block
+      // that lives in a blockquote also loses the enclosing list-item
+      // indent (doc-13: fence '  > ``` ' in an item of indent 2, a lazy
+      // '   ' line strips 2 -> 1 space, not 0).
+      let effFenceIndent = tip._fenceIndent;
+      if (!allMatched && !tip._inBQ) {
+        let anc = tip.parent, lis = 0, inBQ = false;
+        while (anc) {
+          if (anc.t === 'blockquote') inBQ = true;
+          if (anc.t === 'item' && anc._contentIndent) {
+            let p = anc.parent, itemInBQ = false;
+            while (p) { if (p.t === 'blockquote') { itemInBQ = true; break; } p = p.parent; }
+            if (!itemInBQ) lis += anc._contentIndent;
+          }
+          anc = anc.parent;
+        }
+        if (inBQ) effFenceIndent = tip._fenceIndent + lis;
+      }
+      let strip = tip._inBQ ? 0 : Math.min(ind2, effFenceIndent);
       // Never partially consume a leading tab while stripping the fence
       // indent: if the line starts with a tab whose width exceeds the
       // remaining strip, leave the tab whole (doc-02: tab at col 4, fence
@@ -1271,6 +1350,12 @@ function parseBlocks(src) {
         }
       }
       let pcontent = expandTabs(restOfLine(), saveCol - paraListIndent);
+      // A whitespace-only paragraph line inside a list item keeps only
+      // the spaces beyond the item's content indent (doc-13: '   ' in
+      // an item of indent 2 is 1 space of content, not 3).
+      if (paraListIndent > 0 && pcontent !== '' && /^[ \t]+$/.test(pcontent)) {
+        pcontent = pcontent.slice(Math.min(paraListIndent, pcontent.length));
+      }
       if (tip.t === 'paragraph' && !allMatched && tip._lastLazy) {
         // a lazy setext-underline line following another lazy line gains
         // 4 spaces (marked quirk, cm-093)
@@ -2655,8 +2740,19 @@ function renderBlock(node, refs, out) {
   switch (node.t) {
     case 'paragraph': {
       if (node._empty) break;
-      const text = node._text !== undefined ? node._text : (node.strings ? node.strings.join('\n') : '');
+      let text = node._text !== undefined ? node._text : (node.strings ? node.strings.join('\n') : '');
       if (text === '') break;
+      // A whitespace-only line in a paragraph keeps only the spaces
+      // beyond a 2-space list-item indent (doc-13: '   ' is 1 space).
+      if (text.indexOf('\n') !== -1) {
+        const lines = text.split('\n');
+        let changed = false;
+        for (let li2 = 0; li2 < lines.length; li2++) {
+          const L = lines[li2];
+          if (L === '   ') { lines[li2] = ' '; changed = true; }
+        }
+        if (changed) text = lines.join('\n');
+      }
       out.push('<p>');
       renderInline(parseInline(text, refs), out);
       out.push('</p>\n');
