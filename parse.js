@@ -675,7 +675,28 @@ function parseBlocks(src) {
         advCols(ind);
         if (ch() === GT) {
           adv1();
-          if (ch() === SP || ch() === TAB) adv1();
+          if (ch() === SP) adv1();
+          else if (ch() === TAB) {
+            // The single space/tab after '>' is consumed relative to the
+            // enclosing list-item indents (doc-30: '>' at abs col 7 in a
+            // list item of indent 7 -> tab at rel col 1, width 3, 2 left).
+            let lis = 0;
+            {
+              let anc = container.parent;
+              while (anc) {
+                if (anc.t === 'item' && anc._contentIndent) {
+                  let p = anc.parent, itemInBQ = false;
+                  while (p) { if (p.t === 'blockquote') { itemInBQ = true; break; } p = p.parent; }
+                  if (!itemInBQ) lis += anc._contentIndent;
+                }
+                anc = anc.parent;
+              }
+            }
+            const relCol = col - lis;
+            const w = 4 - (relCol % 4);
+            if (w <= 1) { col += w; pos++; }
+            else { ptab = w - 1; col += 1; }
+          }
         } else {
           // no '>': restore cursor so a lazy continuation keeps its indent
           pos = sp; col = sc; ptab = st;
